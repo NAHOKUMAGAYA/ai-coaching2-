@@ -15,8 +15,24 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $SkipSheets = @('記入方法', 'リスト', '休日')
+
+# 画面で選んだ注残リストと製番台帳を覚えておき、次回もそのまま使う
+$SettingsPath = Join-Path $PSScriptRoot '製番転記_設定.json'
+if (Test-Path -LiteralPath $SettingsPath) {
+    $saved = Get-Content -LiteralPath $SettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($saved.Zanzan -and -not $PSBoundParameters.ContainsKey('Zanzan')) { $Zanzan = $saved.Zanzan }
+    if ($saved.Ledgers -and -not $PSBoundParameters.ContainsKey('Ledgers')) { $Ledgers = @($saved.Ledgers) }
+}
+
+function Save-Settings([string]$zanzanPath, [string[]]$ledgerPaths) {
+    ConvertTo-Json -InputObject ([ordered]@{ Zanzan = $zanzanPath; Ledgers = @($ledgerPaths) }) |
+        Set-Content -LiteralPath $SettingsPath -Encoding UTF8
+}
 $MultiColor = 65535   # 黄色: 候補が複数ある行
 $PendingColor = 49407 # オレンジ: 回答納期が未入力の発注明細が残っている行
+$ChangedColor = 255      # 赤塗り: 前回から納期回答が変わった行
+$AddedColor = 15773696   # 水色塗り: 空欄だった納期回答が新しく入った行
+$MarkFontColor = 16777215 # 赤塗り・水色塗りの文字は白
 
 function Normalize-Key([string]$s) {
     if (-not $s) { return '' }
@@ -126,22 +142,42 @@ function Read-Answers($xl, [string]$path, [scriptblock]$log) {
     return $answers
 }
 
-# FD製番ごとに一番遅い回答納期を「納期回答」列に入れる。FD製番が「/」で複数ならその中で一番遅い日
-function Fill-Answer($ws, [int]$first, [int]$count, [int]$seibanCol, [int]$col, [hashtable]$answers, [bool]$overwrite) {
+# 前回までに入れた納期回答の記録（納入指示番号ごと）
+function Read-History([string]$path) {
+    $history = @{}
+    if (Test-Path -LiteralPath $path) {
+        foreach ($row in (Import-Csv -LiteralPath $path -Encoding UTF8)) {
+            $history[$row.'納入指示番号'] = @{ value = $row.'納期回答'; seiban = $row.'FD製番'; time = $row.'記録日時' }
+        }
+    }
+    return $history
+}
+
+function Save-History([string]$path, [hashtable]$history) {
+    $history.GetEnumerator() | Sort-Object Name | ForEach-Object {
+        [pscustomobject]@{ '納入指示番号' = $_.Name; 'FD製番' = $_.Value.seiban; '納期回答' = $_.Value.value; '記録日時' = $_.Value.time }
+    } | Export-Csv -LiteralPath $path -NoTypeInformation -Encoding UTF8
+}
+
+# FD製番ごとに一番遅い回答納期を「納期回答」列に毎回入れ直す。FD製番が「/」で複数ならその中で一番遅い日。
+# 前回の記録(無ければセルにあった値)と変わった行は赤塗り、空欄から入った行は水色塗りにして、内容をメモに残す
+function Fill-Answer($ws, [int]$first, [int]$count, [int]$seibanCol, [int]$col, [hashtable]$answers, [string[]]$keys, [hashtable]$history) {
     $seibans = $ws.Range($ws.Cells.Item($first, $seibanCol), $ws.Cells.Item($first + $count - 1, $seibanCol)).Value2
     $range = $ws.Range($ws.Cells.Item($first, $col), $ws.Cells.Item($first + $count - 1, $col))
     $current = $range.Value2
     $out = New-Object 'object[,]' $count, 1
     $pendingRows = New-Object System.Collections.Generic.List[int]
     $multiRows = New-Object System.Collections.Generic.List[int]
-    $stat = @{ filled = 0; pending = 0; multi = 0; noAnswer = 0; notFound = 0; kept = 0 }
+    $changes = New-Object System.Collections.Generic.List[object]
+    $stat = @{ filled = 0; pending = 0; multi = 0; noAnswer = 0; notFound = 0; changes = $changes }
+    $now = Get-Date -Format 'yyyy-MM-dd HH:mm'
 
     for ($i = 0; $i -lt $count; $i++) {
         $existing = $current[($i + 1), 1]
+        # 新しい回答が見つからない行は消さずに今の値を残す
         $out[$i, 0] = $existing
         $list = @("$($seibans[($i + 1), 1])" -split '/' | ForEach-Object { Normalize-Key $_ } | Where-Object { $_ })
         if ($list.Count -eq 0) { continue }
-        if (-not $overwrite -and "$existing" -ne '') { $stat.kept++; continue }
         $max = $null; $pending = $false; $found = $false
         foreach ($s in $list) {
             if (-not $answers.ContainsKey($s)) { continue }
@@ -152,18 +188,63 @@ function Fill-Answer($ws, [int]$first, [int]$count, [int]$seibanCol, [int]$col, 
         }
         if (-not $found) { $stat.notFound++; continue }
         if ($null -eq $max) { $stat.noAnswer++; continue }
-        $out[$i, 0] = Format-Date $max
+        $new = Format-Date $max
+        $out[$i, 0] = $new
         $stat.filled++
         if ($pending) { $stat.pending++; $pendingRows.Add($first + $i) }
         elseif ($list.Count -gt 1) { $stat.multi++; $multiRows.Add($first + $i) }
+
+        $k = $keys[$i]
+        if (-not $k) { continue }
+        $prev = "$existing"; $prevTime = ''
+        if ($history.ContainsKey($k)) { $prev = $history[$k].value; $prevTime = $history[$k].time }
+        $kind = ''
+        if (-not $prev) { $kind = '新規' }
+        elseif ($prev -ne $new) { $kind = '変更' }
+        if ($kind) {
+            $days = ''
+            $p = [datetime]::MinValue; $n = [datetime]::MinValue
+            if ([datetime]::TryParseExact($prev, 'yyyy-MM-dd', $null, 'None', [ref]$p) -and
+                [datetime]::TryParseExact($new, 'yyyy-MM-dd', $null, 'None', [ref]$n)) { $days = ($n - $p).Days }
+            $changes.Add([pscustomobject]@{ kind = $kind; row = $first + $i; key = $k; seiban = "$($seibans[($i + 1), 1])"; prev = $prev; new = $new; days = $days; prevTime = $prevTime; pending = $pending; multi = ($list.Count -gt 1) })
+        }
+        $history[$k] = @{ value = $new; seiban = "$($seibans[($i + 1), 1])"; time = $now }
     }
 
+    # 前回の色・文字色・メモを消してから付け直す
+    $range.Interior.ColorIndex = -4142
+    $range.Font.ColorIndex = -4105
+    $range.Font.Bold = $false
+    [void]$range.ClearComments()
     $range.NumberFormat = '@'
     $range.Value2 = $out
     foreach ($r in $pendingRows) { $ws.Cells.Item($r, $col).Interior.Color = $PendingColor }
     foreach ($r in $multiRows) { $ws.Cells.Item($r, $col).Interior.Color = $MultiColor }
+    # 赤塗り・水色塗りはオレンジ・黄色より優先するので、その内容はメモに書く
+    foreach ($c in $changes) {
+        $cell = $ws.Cells.Item($c.row, $col)
+        $cell.Interior.Color = if ($c.kind -eq '変更') { $ChangedColor } else { $AddedColor }
+        $cell.Font.Color = $MarkFontColor
+        $cell.Font.Bold = $true
+        $text = if ($c.kind -eq '変更') {
+            $when = if ($c.prevTime) { "（前回記録 $($c.prevTime)）" } else { '' }
+            "納期回答が変わりました`n前回 $($c.prev) → 今回 $($c.new) $(Format-Days $c.days)$when"
+        } else {
+            "納期回答が新しく入りました`n今回 $($c.new)"
+        }
+        if ($c.pending) { $text += "`n※回答納期が未入力の発注明細があります" }
+        if ($c.multi) { $text += "`n※FD製番が複数あります" }
+        [void]$cell.AddComment($text)
+    }
     Release $range
     return $stat
+}
+
+function Format-Days($days) {
+    if ("$days" -eq '') { return '' }
+    if ($days -gt 0) { return "+$($days)日遅れ" }
+    if ($days -lt 0) { return "$(-$days)日早まり" }
+    return ''
 }
 
 function Invoke-Fill([string]$zanzanPath, [string]$orderPath, [string[]]$ledgerPaths, [bool]$overwrite, [scriptblock]$log) {
@@ -251,7 +332,12 @@ function Invoke-Fill([string]$zanzanPath, [string]$orderPath, [string[]]$ledgerP
             $s1 = Fill-Column $ws $first $h.seiban $keys $map $overwrite
             $s2 = Fill-Column $ws $first $h.date $keys $dateMap $overwrite
             $s3 = $null
-            if ($answers) { $s3 = Fill-Answer $ws $first $count $h.seiban $h.answer $answers $overwrite }
+            $folder = Split-Path $zanzanPath
+            $historyPath = Join-Path $folder '納期回答履歴.csv'
+            if ($answers) {
+                $history = Read-History $historyPath
+                $s3 = Fill-Answer $ws $first $count $h.seiban $h.answer $answers $keys $history
+            }
 
             # 上書き前の状態をバックアップしてから保存
             $dir = Join-Path (Split-Path $zanzanPath) 'バックアップ'
@@ -259,6 +345,33 @@ function Invoke-Fill([string]$zanzanPath, [string]$orderPath, [string[]]$ledgerP
             $backup = Join-Path $dir ("{0}_{1}{2}" -f [IO.Path]::GetFileNameWithoutExtension($zanzanPath), (Get-Date -Format 'yyyyMMdd_HHmmss'), [IO.Path]::GetExtension($zanzanPath))
             Copy-Item -LiteralPath $zanzanPath -Destination $backup
             $wb.Save()
+
+            # 注残リストを保存できてから、履歴と変更一覧を書き出す
+            $changePath = ''
+            if ($s3) {
+                Save-History $historyPath $history
+                if ($s3.changes.Count -gt 0) {
+                    $info = Find-Header $ws.Range('A1:BZ5').Value2 5 @{ office = '^事業所名$'; model = '^機種名$'; item = '^品名$' }
+                    $changeDir = Join-Path $folder '納期回答変更'
+                    if (-not (Test-Path -LiteralPath $changeDir)) { [void](New-Item -ItemType Directory -Path $changeDir) }
+                    $changePath = Join-Path $changeDir ("納期回答変更_{0}.csv" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+                    $s3.changes | ForEach-Object {
+                        [pscustomobject]@{
+                            '区分'         = $_.kind
+                            '行'           = $_.row
+                            '事業所名'     = if ($info) { $ws.Cells.Item($_.row, $info.office).Text } else { '' }
+                            '機種名'       = if ($info) { $ws.Cells.Item($_.row, $info.model).Text } else { '' }
+                            '品名'         = if ($info) { $ws.Cells.Item($_.row, $info.item).Text } else { '' }
+                            '納入指示番号' = $_.key
+                            'FD製番'       = $_.seiban
+                            '前回納期回答' = $_.prev
+                            '今回納期回答' = $_.new
+                            '差'           = Format-Days $_.days
+                            '前回記録日時' = $_.prevTime
+                        }
+                    } | Export-Csv -LiteralPath $changePath -NoTypeInformation -Encoding UTF8
+                }
+            }
 
             & $log ''
             & $log "対象行              : $count"
@@ -268,11 +381,17 @@ function Invoke-Fill([string]$zanzanPath, [string]$orderPath, [string[]]$ledgerP
             if ($s3) {
                 & $log "納期回答を入れた行  : $($s3.filled) （うち未回答の明細ありでオレンジ: $($s3.pending) / 製番が複数で黄色: $($s3.multi)）"
                 & $log "  回答納期がまだ無い: $($s3.noAnswer) / 発注仕入状況一覧表に製番が無い: $($s3.notFound)"
+                $changed = @($s3.changes | Where-Object { $_.kind -eq '変更' })
+                $added = @($s3.changes | Where-Object { $_.kind -eq '新規' })
+                & $log "納期回答が前回から変わった行: $($changed.Count) （赤塗り・メモ付き）"
+                foreach ($c in ($changed | Select-Object -First 30)) {
+                    & $log ("  {0,-12} {1,-18} {2} → {3} {4}" -f $c.key, $c.seiban, $c.prev, $c.new, (Format-Days $c.days))
+                }
+                if ($changed.Count -gt 30) { & $log "  …ほか $($changed.Count - 30) 行" }
+                & $log "納期回答が新しく入った行    : $($added.Count) （水色塗り・メモ付き）"
+                if ($changePath) { & $log "  変更・新規の一覧: $changePath" }
             }
-            if (-not $overwrite) {
-                $keptAnswer = if ($s3) { " / 納期回答 $($s3.kept)" } else { '' }
-                & $log "入力済みで残した行  : FD製番 $($s1.kept) / 部品納期 $($s2.kept)$keptAnswer"
-            }
+            if (-not $overwrite) { & $log "入力済みで残した行  : FD製番 $($s1.kept) / 部品納期 $($s2.kept)" }
             & $log "保存しました。元のファイルは $backup に残しています。"
         } finally {
             $wb.Close($false)
@@ -355,6 +474,7 @@ function Add-Ledgers([string[]]$paths) {
     foreach ($f in $paths) {
         if ($f -match '\.(xlsx|xlsm|xls)$' -and -not $lst.Items.Contains($f)) { [void]$lst.Items.Add($f) }
     }
+    Save-Settings $txtZ.Text @($lst.Items)
 }
 
 # エクスプローラーから台帳ファイルをドラッグして追加できるようにする
@@ -383,10 +503,11 @@ $btnDel.Location = New-Object Drawing.Point(640, 182); $btnDel.Size = New-Object
 $btnDel.Anchor = 'Top,Right'
 $btnDel.Add_Click({
     foreach ($item in @($lst.SelectedItems)) { $lst.Items.Remove($item) }
+    Save-Settings $txtZ.Text @($lst.Items)
 })
 
 $chk = New-Object Windows.Forms.CheckBox
-$chk.Text = 'すでにFD製番・部品納期・納期回答が入っている行も上書きする'
+$chk.Text = 'すでにFD製番・部品納期が入っている行も上書きする（納期回答は毎回最新に入れ直します）'
 $chk.Checked = $Overwrite.IsPresent
 $chk.Location = New-Object Drawing.Point(12, 259); $chk.AutoSize = $true
 
@@ -414,6 +535,7 @@ $btnRun.Add_Click({
     $form.Cursor = 'WaitCursor'
     $txtLog.Clear()
     try {
+        Save-Settings $txtZ.Text @($lst.Items)
         Invoke-Fill $txtZ.Text $txtO.Text.Trim() @($lst.Items) $chk.Checked $log
         [Windows.Forms.MessageBox]::Show($form, '完了しました。', '製番転記') | Out-Null
     } catch {
@@ -426,4 +548,5 @@ $btnRun.Add_Click({
 })
 
 $form.Controls.AddRange(@($lbl1, $txtZ, $btnZ, $lblO, $txtO, $btnO, $lbl2, $lst, $btnAdd, $btnDel, $chk, $btnRun, $txtLog))
+$form.Add_FormClosing({ try { Save-Settings $txtZ.Text @($lst.Items) } catch { } })
 [void]$form.ShowDialog()
