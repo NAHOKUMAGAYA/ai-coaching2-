@@ -1,5 +1,5 @@
 ﻿# 注残リストの「納入指示番号」から製番台帳を引いて「FD製番」「部品納期」列に書き込み、
-# その製番の発注明細(発注仕入状況一覧表)から一番遅い回答納期を「納期回答」列に書き込む
+# その製番の発注明細(発注仕入状況一覧表)から一番遅い回答納期を「納期回答」列に、回答備考を「コメント」列に書き込む
 # 使い方: 製番転記.bat をダブルクリック
 #   コマンドで実行する場合: powershell -File 製番転記.ps1 -NoGui [-Zanzan パス] [-Order パス] [-Overwrite]
 param(
@@ -15,6 +15,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $SkipSheets = @('記入方法', 'リスト', '休日')
+# 納期回答・回答備考を見るときに無視する発注先番号（この発注先の明細は回答納期が入っていても使わない）
+$IgnoreSuppliers = @('FSH', 'FZH', 'FZH2', 'NK', 'SFD', 'SFH', 'SFZ', 'SM', 'SMF', 'SPH', 'SPM', 'SPP', 'STK')
 
 # 画面で選んだ注残リストと製番台帳を覚えておき、次回もそのまま使う
 $SettingsPath = Join-Path $PSScriptRoot '製番転記_設定.json'
@@ -28,11 +30,20 @@ function Save-Settings([string]$zanzanPath, [string[]]$ledgerPaths) {
     ConvertTo-Json -InputObject ([ordered]@{ Zanzan = $zanzanPath; Ledgers = @($ledgerPaths) }) |
         Set-Content -LiteralPath $SettingsPath -Encoding UTF8
 }
-$MultiColor = 65535   # 黄色: 候補が複数ある行
-$PendingColor = 49407 # オレンジ: 回答納期が未入力の発注明細が残っている行
-$ChangedColor = 255      # 赤塗り: 前回から納期回答が変わった行
-$AddedColor = 15773696   # 水色塗り: 空欄だった納期回答が新しく入った行
-$MarkFontColor = 16777215 # 赤塗り・水色塗りの文字は白
+# セルの色分け（Excelの色は BGR の数値）
+#   製番が2つ以上 : 黄色塗り・赤太字（ほかより優先）
+#   納期回答の新規: 水色塗り・白字 / 変更: 赤塗り・白字 / 前回と同じ: 塗りなし・黒字
+$MultiColor = 65535       # 黄色
+$MultiFontColor = 255     # 赤
+$ChangedColor = 255       # 赤
+$AddedColor = 15773696    # 水色
+$MarkFontColor = 16777215 # 白
+
+function Set-MultiStyle($cell) {
+    $cell.Interior.Color = $MultiColor
+    $cell.Font.Color = $MultiFontColor
+    $cell.Font.Bold = $true
+}
 
 function Normalize-Key([string]$s) {
     if (-not $s) { return '' }
@@ -72,30 +83,44 @@ function Format-Date($v) {
     return "$v".Trim()
 }
 
-# 注残リストの1列を、納入指示番号をキーに対応表から埋める。候補が複数ある行は「/」でつないで黄色にする
+# 注残リストの1列を、納入指示番号をキーに対応表から埋める。候補が複数ある行は「/」でつないで黄色塗り・赤太字にする
 function Fill-Column($ws, [int]$first, [int]$col, [string[]]$keys, [hashtable]$lookup, [bool]$overwrite) {
     $count = $keys.Count
     $range = $ws.Range($ws.Cells.Item($first, $col), $ws.Cells.Item($first + $count - 1, $col))
     $current = $range.Value2
     $out = New-Object 'object[,]' $count, 1
     $multiRows = New-Object System.Collections.Generic.List[int]
+    $singleRows = New-Object System.Collections.Generic.List[int]
     $stat = @{ filled = 0; multi = 0; kept = 0 }
 
     for ($i = 0; $i -lt $count; $i++) {
         $existing = $current[($i + 1), 1]
         $out[$i, 0] = $existing
-        if (-not $overwrite -and "$existing" -ne '') { $stat.kept++; continue }
+        if (-not $overwrite -and "$existing" -ne '') {
+            # 残した行も、前の色分けやダウンロード時の赤太字のままにならないよう色分けし直す
+            $stat.kept++
+            if ("$existing" -like '*/*') { $multiRows.Add($first + $i) } else { $singleRows.Add($first + $i) }
+            continue
+        }
         $k = $keys[$i]
         if (-not $k -or -not $lookup.ContainsKey($k)) { continue }
         $out[$i, 0] = ($lookup[$k] -join '/')
         $stat.filled++
         if ($lookup[$k].Count -gt 1) { $stat.multi++; $multiRows.Add($first + $i) }
+        else { $singleRows.Add($first + $i) }
     }
 
     # 製番や日付が数値に変換されないよう文字列書式にしてから一括書き込み
     $range.NumberFormat = '@'
     $range.Value2 = $out
-    foreach ($r in $multiRows) { $ws.Cells.Item($r, $col).Interior.Color = $MultiColor }
+    foreach ($r in $multiRows) { Set-MultiStyle $ws.Cells.Item($r, $col) }
+    # 製番が1つの行は塗りなし・黒字にする
+    foreach ($r in $singleRows) {
+        $cell = $ws.Cells.Item($r, $col)
+        $cell.Interior.ColorIndex = -4142
+        $cell.Font.ColorIndex = -4105
+        $cell.Font.Bold = $false
+    }
     Release $range
     return $stat
 }
@@ -108,33 +133,76 @@ function Find-OrderFile([string]$zanzanPath) {
     return ''
 }
 
-# 発注仕入状況一覧表から 製造番号 → 一番遅い回答納期・未回答の明細の有無 を集計する
-function Read-Answers($xl, [string]$path, [scriptblock]$log) {
+# 発注仕入状況一覧表の明細のうち「発注明細」シートに出す列（見出し → 発注明細シートでの見出し）
+$DetailColumns = [ordered]@{
+    '発注番号' = '発注番号'; '発注先番号' = '発注先番号'; '発注先名称' = '発注先名称'; '品名規格' = '品名規格'; '型式材質' = '型式材質'
+    '発注数計' = '発注数'; '仕入数計' = '仕入数'; '仕入残' = '仕入残'; '仕入状況' = '仕入状況'
+    '発注日' = '発注日'; '部品納期' = '部品納期'; '回答納期' = '回答納期'
+}
+
+# 発注仕入状況一覧表から 製造番号 → 一番遅い回答納期・未回答の明細の有無 を集計する。
+# $detail には「発注明細」シート用に、製造番号ごとの明細の行番号と各列の値を入れる
+function Read-Answers($xl, [string]$path, [scriptblock]$log, [hashtable]$detail) {
     & $log "発注仕入状況一覧表読込: $(Split-Path $path -Leaf)"
     $answers = @{}
     $wb = $xl.Workbooks.Open($path, 0, $true)
     try {
         $ws = $wb.Worksheets.Item(1)
-        $h = Find-Header $ws.Range('A1:BZ5').Value2 5 @{ seiban = '^製造番号$'; answer = '^回答納期$'; remain = '^仕入残$' }
-        if (-not $h) { throw '発注仕入状況一覧表に「製造番号」「回答納期」「仕入残」の見出しが見つかりません。' }
+        $h = Find-Header $ws.Range('A1:BZ5').Value2 5 @{ supplier = '^発注先番号$'; seiban = '^製造番号$'; answer = '^回答納期$'; remark = '^回答備考$'; remain = '^仕入残$' }
+        if (-not $h) { throw '発注仕入状況一覧表に「発注先番号」「製造番号」「回答納期」「回答備考」「仕入残」の見出しが見つかりません。' }
         $last = $ws.Cells.Item($ws.Rows.Count, $h.seiban).End(-4162).Row
+        $sp = $ws.Range($ws.Cells.Item(1, $h.supplier), $ws.Cells.Item($last, $h.supplier)).Value2
         $sb = $ws.Range($ws.Cells.Item(1, $h.seiban), $ws.Cells.Item($last, $h.seiban)).Value2
         $an = $ws.Range($ws.Cells.Item(1, $h.answer), $ws.Cells.Item($last, $h.answer)).Value2
+        $bk = $ws.Range($ws.Cells.Item(1, $h.remark), $ws.Cells.Item($last, $h.remark)).Value2
         $rm = $ws.Range($ws.Cells.Item(1, $h.remain), $ws.Cells.Item($last, $h.remain)).Value2
+
+        $headRow = $ws.Range($ws.Cells.Item($h.row, 1), $ws.Cells.Item($h.row, 80)).Value2
+        $detail.cols = @{}
+        foreach ($name in $DetailColumns.Keys) {
+            for ($c = 1; $c -le 80; $c++) {
+                if (("$($headRow[1, $c])" -replace '\s', '') -eq $name) {
+                    $detail.cols[$name] = $ws.Range($ws.Cells.Item(1, $c), $ws.Cells.Item($last, $c)).Value2
+                    break
+                }
+            }
+        }
+        $detail.rows = @{}
+        $detail.remarks = New-Object 'string[]' ($last + 1)
+
+        $prevRemark = ''
+        $ignored = 0
         for ($r = $h.row + 1; $r -le $last; $r++) {
+            # 「〃」はすぐ上の行(同じ発注先)の回答備考と同じという意味なので置き換える
+            $remark = "$($bk[$r, 1])".Trim()
+            if ($remark -match '^[〃″"]+$' -and $r -gt $h.row + 1 -and "$($sp[$r, 1])" -eq "$($sp[($r - 1), 1])") { $remark = $prevRemark }
+            $prevRemark = $remark
+            $detail.remarks[$r] = $remark
+
             $k = Normalize-Key "$($sb[$r, 1])"
             if (-not $k) { continue }
-            if (-not $answers.ContainsKey($k)) { $answers[$k] = @{ max = $null; pending = $false } }
+            if (-not $detail.rows.ContainsKey($k)) { $detail.rows[$k] = New-Object System.Collections.Generic.List[int] }
+            $detail.rows[$k].Add($r)
+            if ($IgnoreSuppliers -contains (Normalize-Key "$($sp[$r, 1])")) { $ignored++; continue }
+            if (-not $answers.ContainsKey($k)) {
+                $answers[$k] = @{
+                    max = $null; pending = $false
+                    maxRemarks = New-Object System.Collections.Generic.List[string]      # 一番遅い回答納期の明細の回答備考
+                    pendingRemarks = New-Object System.Collections.Generic.List[string]  # 回答納期が空で入荷が残る明細の回答備考
+                }
+            }
             $e = $answers[$k]
             $a = $an[$r, 1]
             if ($a -is [double]) {
-                if ($null -eq $e.max -or $a -gt $e.max) { $e.max = $a }
+                if ($null -eq $e.max -or $a -gt $e.max) { $e.max = $a; $e.maxRemarks.Clear() }
+                if ($a -eq $e.max -and $remark -and -not $e.maxRemarks.Contains($remark)) { $e.maxRemarks.Add($remark) }
             } elseif ($rm[$r, 1] -is [double] -and $rm[$r, 1] -gt 0) {
                 # 入荷が残っているのに回答納期が空の明細
                 $e.pending = $true
+                if ($remark -and -not $e.pendingRemarks.Contains($remark)) { $e.pendingRemarks.Add($remark) }
             }
         }
-        & $log "  発注明細 $($last - $h.row) 行 / 製造番号 $($answers.Count) 件"
+        & $log "  発注明細 $($last - $h.row) 行（うち無視する発注先 $ignored 行） / 製造番号 $($answers.Count) 件"
     } finally {
         $wb.Close($false)
         Release $wb
@@ -147,7 +215,7 @@ function Read-History([string]$path) {
     $history = @{}
     if (Test-Path -LiteralPath $path) {
         foreach ($row in (Import-Csv -LiteralPath $path -Encoding UTF8)) {
-            $history[$row.'納入指示番号'] = @{ value = $row.'納期回答'; seiban = $row.'FD製番'; time = $row.'記録日時' }
+            $history[$row.'納入指示番号'] = @{ value = $row.'納期回答'; seiban = $row.'FD製番'; time = $row.'記録日時'; remark = "$($row.'回答備考')" }
         }
     }
     return $history
@@ -155,7 +223,7 @@ function Read-History([string]$path) {
 
 function Save-History([string]$path, [hashtable]$history) {
     $history.GetEnumerator() | Sort-Object Name | ForEach-Object {
-        [pscustomobject]@{ '納入指示番号' = $_.Name; 'FD製番' = $_.Value.seiban; '納期回答' = $_.Value.value; '記録日時' = $_.Value.time }
+        [pscustomobject]@{ '納入指示番号' = $_.Name; 'FD製番' = $_.Value.seiban; '納期回答' = $_.Value.value; '記録日時' = $_.Value.time; '回答備考' = $_.Value.remark }
     } | Export-Csv -LiteralPath $path -NoTypeInformation -Encoding UTF8
 }
 
@@ -169,12 +237,11 @@ function Fill-Answer($ws, [int]$first, [int]$count, [int]$seibanCol, [int]$col, 
     $pendingRows = New-Object System.Collections.Generic.List[int]
     $multiRows = New-Object System.Collections.Generic.List[int]
     $changes = New-Object System.Collections.Generic.List[object]
-    $stat = @{ filled = 0; pending = 0; multi = 0; noAnswer = 0; notFound = 0; changes = $changes }
+    $stat = @{ filled = 0; pending = 0; multi = 0; noAnswer = 0; notFound = 0; cleared = 0; changes = $changes }
     $now = Get-Date -Format 'yyyy-MM-dd HH:mm'
 
     for ($i = 0; $i -lt $count; $i++) {
         $existing = $current[($i + 1), 1]
-        # 新しい回答が見つからない行は消さずに今の値を残す
         $out[$i, 0] = $existing
         $list = @("$($seibans[($i + 1), 1])" -split '/' | ForEach-Object { Normalize-Key $_ } | Where-Object { $_ })
         if ($list.Count -eq 0) { continue }
@@ -186,15 +253,25 @@ function Fill-Answer($ws, [int]$first, [int]$count, [int]$seibanCol, [int]$col, 
             if ($e.pending) { $pending = $true }
             if ($null -ne $e.max -and ($null -eq $max -or $e.max -gt $max)) { $max = $e.max }
         }
-        if (-not $found) { $stat.notFound++; continue }
-        if ($null -eq $max) { $stat.noAnswer++; continue }
+        $k = $keys[$i]
+        if (-not $found -or $null -eq $max) {
+            if (-not $found) { $stat.notFound++ } else { $stat.noAnswer++ }
+            # 回答が無くなった行は、前回このツールが入れた値のままなら消す（無視する発注先の回答などが残らないように）。
+            # 自分で入力した値(履歴と違う値)は残す
+            if ($k -and "$existing" -ne '' -and $history.ContainsKey($k) -and $history[$k].value -eq "$existing") {
+                $out[$i, 0] = $null
+                $history[$k].value = ''
+                $history[$k].time = $now
+                $stat.cleared++
+            }
+            continue
+        }
         $new = Format-Date $max
         $out[$i, 0] = $new
         $stat.filled++
         if ($pending) { $stat.pending++; $pendingRows.Add($first + $i) }
-        elseif ($list.Count -gt 1) { $stat.multi++; $multiRows.Add($first + $i) }
+        if ($list.Count -gt 1) { $stat.multi++; $multiRows.Add($first + $i) }
 
-        $k = $keys[$i]
         if (-not $k) { continue }
         $prev = "$existing"; $prevTime = ''
         if ($history.ContainsKey($k)) { $prev = $history[$k].value; $prevTime = $history[$k].time }
@@ -208,7 +285,10 @@ function Fill-Answer($ws, [int]$first, [int]$count, [int]$seibanCol, [int]$col, 
                 [datetime]::TryParseExact($new, 'yyyy-MM-dd', $null, 'None', [ref]$n)) { $days = ($n - $p).Days }
             $changes.Add([pscustomobject]@{ kind = $kind; row = $first + $i; key = $k; seiban = "$($seibans[($i + 1), 1])"; prev = $prev; new = $new; days = $days; prevTime = $prevTime; pending = $pending; multi = ($list.Count -gt 1) })
         }
-        $history[$k] = @{ value = $new; seiban = "$($seibans[($i + 1), 1])"; time = $now }
+        if (-not $history.ContainsKey($k)) { $history[$k] = @{ remark = '' } }
+        $history[$k].value = $new
+        $history[$k].seiban = "$($seibans[($i + 1), 1])"
+        $history[$k].time = $now
     }
 
     # 前回の色・文字色・メモを消してから付け直す
@@ -218,26 +298,159 @@ function Fill-Answer($ws, [int]$first, [int]$count, [int]$seibanCol, [int]$col, 
     [void]$range.ClearComments()
     $range.NumberFormat = '@'
     $range.Value2 = $out
-    foreach ($r in $pendingRows) { $ws.Cells.Item($r, $col).Interior.Color = $PendingColor }
-    foreach ($r in $multiRows) { $ws.Cells.Item($r, $col).Interior.Color = $MultiColor }
-    # 赤塗り・水色塗りはオレンジ・黄色より優先するので、その内容はメモに書く
+    # 新規は水色塗り・白字、変更は赤塗り・白字。製番が複数の行は黄色塗り・赤太字を優先し、新規・変更はメモで分かるようにする
+    $notes = @{}
     foreach ($c in $changes) {
-        $cell = $ws.Cells.Item($c.row, $col)
-        $cell.Interior.Color = if ($c.kind -eq '変更') { $ChangedColor } else { $AddedColor }
-        $cell.Font.Color = $MarkFontColor
-        $cell.Font.Bold = $true
-        $text = if ($c.kind -eq '変更') {
+        if (-not $c.multi) {
+            $cell = $ws.Cells.Item($c.row, $col)
+            $cell.Interior.Color = if ($c.kind -eq '変更') { $ChangedColor } else { $AddedColor }
+            $cell.Font.Color = $MarkFontColor
+        }
+        $notes[$c.row] = if ($c.kind -eq '変更') {
             $when = if ($c.prevTime) { "（前回記録 $($c.prevTime)）" } else { '' }
             "納期回答が変わりました`n前回 $($c.prev) → 今回 $($c.new) $(Format-Days $c.days)$when"
         } else {
             "納期回答が新しく入りました`n今回 $($c.new)"
         }
-        if ($c.pending) { $text += "`n※回答納期が未入力の発注明細があります" }
-        if ($c.multi) { $text += "`n※FD製番が複数あります" }
-        [void]$cell.AddComment($text)
     }
+    foreach ($r in $multiRows) {
+        Set-MultiStyle $ws.Cells.Item($r, $col)
+        $notes[$r] = (@($notes[$r], '※FD製番が複数あります') | Where-Object { $_ }) -join "`n"
+    }
+    foreach ($r in $pendingRows) {
+        $notes[$r] = (@($notes[$r], '※回答納期が未入力の発注明細があります') | Where-Object { $_ }) -join "`n"
+    }
+    foreach ($r in $notes.Keys) { [void]$ws.Cells.Item($r, $col).AddComment($notes[$r]) }
     Release $range
     return $stat
+}
+
+# FD製番ごとの回答備考を「コメント」列に毎回入れ直す。
+# 一番遅い回答納期の明細の備考に、回答納期が空で入荷が残る明細の備考を続ける。
+# 備考が無くなった行は、前回このツールが入れた値のままなら消し、自分で入力した値は残す
+function Fill-Remark($ws, [int]$first, [int]$count, [int]$seibanCol, [int]$col, [hashtable]$answers, [string[]]$keys, [hashtable]$history) {
+    $seibans = $ws.Range($ws.Cells.Item($first, $seibanCol), $ws.Cells.Item($first + $count - 1, $seibanCol)).Value2
+    $range = $ws.Range($ws.Cells.Item($first, $col), $ws.Cells.Item($first + $count - 1, $col))
+    $out = $range.Value2
+    $stat = @{ filled = 0; cleared = 0 }
+
+    for ($i = 1; $i -le $count; $i++) {
+        $k = $keys[($i - 1)]
+        $list = @("$($seibans[$i, 1])" -split '/' | ForEach-Object { Normalize-Key $_ } | Where-Object { $_ -and $answers.ContainsKey($_) })
+        $max = $null
+        foreach ($s in $list) { $m = $answers[$s].max; if ($null -ne $m -and ($null -eq $max -or $m -gt $max)) { $max = $m } }
+        $remarks = New-Object System.Collections.Generic.List[string]
+        foreach ($s in $list) {
+            if ($null -ne $max -and $answers[$s].max -eq $max) { foreach ($t in $answers[$s].maxRemarks) { if (-not $remarks.Contains($t)) { $remarks.Add($t) } } }
+        }
+        foreach ($s in $list) { foreach ($t in $answers[$s].pendingRemarks) { if (-not $remarks.Contains($t)) { $remarks.Add($t) } } }
+
+        if ($remarks.Count -eq 0) {
+            $existing = "$($out[$i, 1])"
+            if ($k -and $existing -ne '' -and $history.ContainsKey($k) -and $history[$k].remark -eq $existing) {
+                $out[$i, 1] = $null
+                $history[$k].remark = ''
+                $stat.cleared++
+            }
+            continue
+        }
+        $text = $remarks -join ' / '
+        $out[$i, 1] = $text
+        $stat.filled++
+        if ($k) {
+            if (-not $history.ContainsKey($k)) { $history[$k] = @{ value = ''; seiban = "$($seibans[$i, 1])"; time = (Get-Date -Format 'yyyy-MM-dd HH:mm') } }
+            $history[$k].remark = $text
+        }
+    }
+
+    # 列を挿入したときに左隣(納期回答)からコピーされた色などが残らないよう、書式を戻してから書き込む。
+    # 「7/15」などが日付に変換されないよう文字列書式にする
+    $range.Interior.ColorIndex = -4142
+    $range.Font.ColorIndex = -4105
+    $range.Font.Bold = $false
+    $range.NumberFormat = '@'
+    $range.Value2 = $out
+    Release $range
+    return $stat
+}
+
+# 注残リストの行ごとに、FD製番の発注明細を1行ずつ「発注明細」シートに並べる（毎回作り直す）。
+# 納期回答の元になった明細には★、無視する発注先の明細には「対象外」を付ける
+function Write-DetailSheet($wb, $ws, [int]$first, [int]$count, [int]$seibanCol, [int]$orderCol, [int]$answerCol, [hashtable]$answers, [hashtable]$detail) {
+    $sheetName = '発注明細'
+    $info = Find-Header $ws.Range('A1:BZ5').Value2 5 @{ office = '^事業所名$'; item = '^品名$' }
+    $last = $first + $count - 1
+    # 先頭の「,」は、2次元配列が平たくならないようにするため
+    $col = { param($c) , $ws.Range($ws.Cells.Item($first, $c), $ws.Cells.Item($last, $c)).Value2 }
+    $seibans = & $col $seibanCol
+    $orders = & $col $orderCol
+    $answerVals = & $col $answerCol
+    $offices = $null; $items = $null
+    if ($info) { $offices = & $col $info.office; $items = & $col $info.item }
+
+    # 出す行（注残の行, 発注明細の行, その注残の行の一番遅い回答納期）を先に集める
+    $pairs = New-Object System.Collections.Generic.List[object]
+    for ($i = 1; $i -le $count; $i++) {
+        $list = @("$($seibans[$i, 1])" -split '/' | ForEach-Object { Normalize-Key $_ } | Where-Object { $_ })
+        $max = $null
+        foreach ($s in $list) {
+            if ($answers.ContainsKey($s)) { $m = $answers[$s].max; if ($null -ne $m -and ($null -eq $max -or $m -gt $max)) { $max = $m } }
+        }
+        foreach ($s in $list) {
+            if (-not $detail.rows.ContainsKey($s)) { continue }
+            foreach ($r in $detail.rows[$s]) { $pairs.Add(@($i, $r, $max)) }
+        }
+    }
+
+    $heads = @('注残の行', '事業所名', '納入指示番号', '品名', 'FD製番', '納期回答') + @($DetailColumns.Values) + @('回答備考', '区分')
+    $numberHeads = @('注残の行', '発注数', '仕入数', '仕入残')
+    $dateHeads = @('発注日', '部品納期', '回答納期')
+    $out = New-Object 'object[,]' ($pairs.Count + 1), $heads.Count
+    for ($c = 0; $c -lt $heads.Count; $c++) { $out[0, $c] = $heads[$c] }
+    $n = 1
+    foreach ($p in $pairs) {
+        $i = $p[0]; $r = $p[1]; $max = $p[2]
+        $out[$n, 0] = $first + $i - 1
+        $out[$n, 1] = if ($offices) { "$($offices[$i, 1])" } else { '' }
+        $out[$n, 2] = "$($orders[$i, 1])"
+        $out[$n, 3] = if ($items) { "$($items[$i, 1])" } else { '' }
+        $out[$n, 4] = "$($seibans[$i, 1])"
+        $out[$n, 5] = "$($answerVals[$i, 1])"
+        $c = 6
+        foreach ($name in $DetailColumns.Keys) {
+            $v = if ($detail.cols.ContainsKey($name)) { $detail.cols[$name][$r, 1] } else { $null }
+            $out[$n, $c] = if ($dateHeads -contains $DetailColumns[$name]) { Format-Date $v }
+                           elseif ($numberHeads -contains $DetailColumns[$name]) { $v }
+                           else { "$v".Trim() }
+            $c++
+        }
+        $out[$n, $c] = $detail.remarks[$r]
+        $supplier = if ($detail.cols.ContainsKey('発注先番号')) { Normalize-Key "$($detail.cols['発注先番号'][$r, 1])" } else { '' }
+        $answer = if ($detail.cols.ContainsKey('回答納期')) { $detail.cols['回答納期'][$r, 1] } else { $null }
+        $out[$n, ($c + 1)] = if ($IgnoreSuppliers -contains $supplier) { '対象外の発注先' }
+                             elseif ($null -ne $max -and $answer -is [double] -and $answer -eq $max) { '★納期回答の元' }
+                             else { '' }
+        $n++
+    }
+
+    foreach ($s in @($wb.Worksheets)) { if ($s.Name -eq $sheetName) { $s.Delete() } }
+    $ds = $wb.Worksheets.Add([Reflection.Missing]::Value, $wb.Worksheets.Item($wb.Worksheets.Count))
+    $ds.Name = $sheetName
+    $rows = $pairs.Count + 1
+    for ($c = 1; $c -le $heads.Count; $c++) {
+        if ($numberHeads -notcontains $heads[$c - 1]) { $ds.Range($ds.Cells.Item(1, $c), $ds.Cells.Item($rows, $c)).NumberFormat = '@' }
+    }
+    $all = $ds.Range($ds.Cells.Item(1, 1), $ds.Cells.Item($rows, $heads.Count))
+    $all.Value2 = $out
+    $head = $ds.Range($ds.Cells.Item(1, 1), $ds.Cells.Item(1, $heads.Count))
+    $head.Font.Bold = $true
+    $head.Interior.Color = 14277081   # 薄い灰色
+    [void]$all.AutoFilter()
+    [void]$all.Columns.AutoFit()
+    # 元のシートを開いた状態で保存する
+    [void]$ws.Activate()
+    Release $all; Release $head; Release $ds
+    return $pairs.Count
 }
 
 function Format-Days($days) {
@@ -306,7 +519,8 @@ function Invoke-Fill([string]$zanzanPath, [string]$orderPath, [string[]]$ledgerP
         if ($map.Count -eq 0) { throw '製番台帳から納入指示番号を読み取れませんでした。' }
 
         $answers = $null
-        if ($orderPath) { $answers = Read-Answers $xl $orderPath $log }
+        $detail = @{}
+        if ($orderPath) { $answers = Read-Answers $xl $orderPath $log $detail }
         else { & $log '発注仕入状況一覧表が指定されていないため、納期回答は入れません' }
 
         # ---- 注残リストに書き込む ----
@@ -337,6 +551,10 @@ function Invoke-Fill([string]$zanzanPath, [string]$orderPath, [string[]]$ledgerP
             if ($answers) {
                 $history = Read-History $historyPath
                 $s3 = Fill-Answer $ws $first $count $h.seiban $h.answer $answers $keys $history
+                $rc = Find-Header $ws.Range('A1:BZ5').Value2 5 @{ remark = '^(コメント|回答備考)$' }
+                $s4 = $null
+                if ($rc) { $s4 = Fill-Remark $ws $first $count $h.seiban $rc.remark $answers $keys $history }
+                $detailRows = Write-DetailSheet $wb $ws $first $count $h.seiban $h.order $h.answer $answers $detail
             }
 
             # 上書き前の状態をバックアップしてから保存
@@ -376,10 +594,10 @@ function Invoke-Fill([string]$zanzanPath, [string]$orderPath, [string[]]$ledgerP
             & $log ''
             & $log "対象行              : $count"
             & $log "台帳に無かった行    : $missing"
-            & $log "FD製番を入れた行    : $($s1.filled) （うち候補が複数で黄色表示: $($s1.multi)）"
-            & $log "部品納期を入れた行  : $($s2.filled) （うち候補が複数で黄色表示: $($s2.multi)）"
+            & $log "FD製番を入れた行    : $($s1.filled) （うち候補が複数で黄色: $($s1.multi)）"
+            & $log "部品納期を入れた行  : $($s2.filled) （うち候補が複数で黄色: $($s2.multi)）"
             if ($s3) {
-                & $log "納期回答を入れた行  : $($s3.filled) （うち未回答の明細ありでオレンジ: $($s3.pending) / 製番が複数で黄色: $($s3.multi)）"
+                & $log "納期回答を入れた行  : $($s3.filled) （うち製番が複数で黄色: $($s3.multi) / 未回答の明細ありをメモ: $($s3.pending)）"
                 & $log "  回答納期がまだ無い: $($s3.noAnswer) / 発注仕入状況一覧表に製番が無い: $($s3.notFound)"
                 $changed = @($s3.changes | Where-Object { $_.kind -eq '変更' })
                 $added = @($s3.changes | Where-Object { $_.kind -eq '新規' })
@@ -390,6 +608,10 @@ function Invoke-Fill([string]$zanzanPath, [string]$orderPath, [string[]]$ledgerP
                 if ($changed.Count -gt 30) { & $log "  …ほか $($changed.Count - 30) 行" }
                 & $log "納期回答が新しく入った行    : $($added.Count) （水色塗り・メモ付き）"
                 if ($changePath) { & $log "  変更・新規の一覧: $changePath" }
+                if ($s3.cleared) { & $log "回答が無くなり納期回答を消した行: $($s3.cleared)" }
+                if ($s4) { & $log "回答備考を入れた行  : $($s4.filled)$(if ($s4.cleared) { " （備考が無くなり消した行: $($s4.cleared)）" })" }
+                else { & $log '注残リストに「コメント」列が無いため、回答備考は入れていません' }
+                & $log "「発注明細」シート  : $detailRows 行"
             }
             if (-not $overwrite) { & $log "入力済みで残した行  : FD製番 $($s1.kept) / 部品納期 $($s2.kept)" }
             & $log "保存しました。元のファイルは $backup に残しています。"
