@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 選んだファイルを外へ送れないよう、通信をすべて禁止する（読み込むのはこのサイトのファイルと ExcelJS だけ） -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://cdnjs.cloudflare.com; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="robots" content="noindex">
+<title>注残リスト 製番転記</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <h1>注残リスト 製番転記</h1>
+  <p class="lead">
+    製番台帳から注残リストの「FD製番」「部品納期」を、発注仕入状況一覧表から「納期回答」「コメント」を埋めます。
+    ファイルはこのパソコンのブラウザの中だけで処理し、インターネットには送りません。
+  </p>
+
+  <section>
+    <div class="row">
+      <label>注残リスト</label>
+      <span id="zanzanName" class="name">未選択</span>
+      <button type="button" id="zanzanPick">選ぶ...</button>
+    </div>
+
+    <div class="row">
+      <label>発注仕入状況一覧表<small>納期回答の元データ。空なら納期回答は入れません</small></label>
+      <span id="orderName" class="name">未選択</span>
+      <button type="button" id="orderPick">選ぶ...</button>
+      <button type="button" id="orderClear" class="sub">外す</button>
+    </div>
+
+    <div class="row ledgers">
+      <label>製番台帳<small>複数可・ここへファイルをドラッグしても追加できます</small></label>
+      <select id="ledgerList" multiple size="7"></select>
+      <div class="buttons">
+        <button type="button" id="ledgerAdd">追加...</button>
+        <button type="button" id="ledgerDel" class="sub">削除</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <label>納期回答履歴.csv<small>注残リストと同じフォルダのもの。初めてなら空のままで構いません</small></label>
+      <span id="historyName" class="name">未選択</span>
+      <button type="button" id="historyPick">選ぶ...</button>
+      <button type="button" id="historyClear" class="sub">外す</button>
+    </div>
+
+    <label class="check"><input type="checkbox" id="overwrite"> すでにFD製番・部品納期が入っている行も上書きする（納期回答は毎回最新に入れ直します）</label>
+
+    <div class="actions">
+      <button type="button" id="run" class="primary">実行</button>
+    </div>
+  </section>
+
+  <pre id="log" aria-live="polite"></pre>
+
+  <section id="result" hidden>
+    <h2>保存</h2>
+    <p id="saveNote"></p>
+    <div class="actions">
+      <button type="button" id="saveOver" class="primary" hidden>注残リストに上書き保存</button>
+      <button type="button" id="saveDownload">ダウンロードで保存</button>
+    </div>
+  </section>
+
+  <p id="support" class="note" hidden>
+    このブラウザでは選んだファイルへの上書き保存と、台帳の記憶ができません。結果はダウンロードで保存します（Chrome / Edge なら上書き保存できます）。
+  </p>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js" integrity="sha384-Pqp51FUN2/qzfxZxBCtF0stpc9ONI6MYZpVqmo8m20SoaQCzf+arZvACkLkirlPz" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="seiban.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

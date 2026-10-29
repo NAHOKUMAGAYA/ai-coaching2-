@@ -1,0 +1,9 @@
+// Cloudflare Workers の設定。public/ の静的ファイル（製番転記のブラウザ版）をそのまま配信する
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "seiban-tenki",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./public"
+  }
+}

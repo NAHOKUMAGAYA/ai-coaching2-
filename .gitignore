@@ -1,0 +1,5 @@
+# public/ は Cloudflare でそのまま公開されるので、社内データ（Excel・CSV）を置かない
+public/**/*.xls
+public/**/*.xlsx
+public/**/*.xlsm
+public/**/*.csv
