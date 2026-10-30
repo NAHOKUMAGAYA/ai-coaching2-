@@ -7,6 +7,12 @@
     const SKIP_SHEETS = ['記入方法', 'リスト', '休日'];
     // 納期回答・回答備考を見るときに無視する発注先番号（この発注先の明細は回答納期が入っていても使わない）
     const IGNORE_SUPPLIERS = ['FSH', 'FZH', 'FZH2', 'NK', 'SFD', 'SFH', 'SFZ', 'SM', 'SMF', 'SPH', 'SPM', 'SPP', 'STK'];
+    // FD製番に「対象外」と入れる条件（どれか1つに当てはまる行）:
+    //   ユーザ欄1が J 以外 / 納入指示区分が JIT（手配JIT は含まない）/ 品番が対象外品番リストのこのシートにある
+    const EXCLUDE_TEXT = '対象外';
+    const EXCLUDE_SHEET = '納期回答対象外';
+    // 上の条件に当てはまっても対象外にしない品番
+    const KEEP_PARTS = ['EK0393'];
 
     // セルの色分け
     //   製番が2つ以上 : 黄色塗り・赤太字（ほかより優先）
@@ -277,6 +283,53 @@
         return answers;
     }
 
+    // 対象外品番リストの「納期回答対象外」シートから品番を読む
+    async function readExcludeItems(source, log) {
+        log(`対象外品番リスト読込: ${source.name}`);
+        const items = new Set();
+        const wb = await loadBook(await source.read(), READ_ONLY_OPTIONS);
+        const ws = wb.getWorksheet(EXCLUDE_SHEET);
+        if (!ws) throw new Error(`対象外品番リストに「${EXCLUDE_SHEET}」シートが見つかりません。`);
+        const h = findHeader(ws, 5, 26, { item: /^品番$/i });
+        if (!h) throw new Error(`対象外品番リストの「${EXCLUDE_SHEET}」シートに「品番」の見出しが見つかりません。`);
+        const last = lastRow(ws, h.item);
+        const v = readColumn(ws, h.item, last);
+        for (let r = h.row + 1; r <= last; r++) {
+            const k = normalizeKey(v[r]);
+            if (k) items.add(k);
+        }
+        log(`  シート[${EXCLUDE_SHEET}] 品番 ${items.size} 件`);
+        return items;
+    }
+
+    // FD製番に「対象外」と入れる行を決める。ユーザ欄1が J 以外・納入指示区分が JIT・品番が対象外品番リストにある、のどれかに当てはまる行。
+    // 見出しが無い条件は使わない
+    function findExcluded(ws, first, count, items, log) {
+        const col = (pattern, label) => {
+            const h = findHeader(ws, 5, 78, { c: pattern });
+            if (!h) { log(`※注残リストに「${label}」の見出しが無いため、この条件では対象外にしません`); return null; }
+            return h.c;
+        };
+        const userCol = col(/^ユーザ欄[1１]$/, 'ユーザ欄1');
+        const kindCol = col(/^納入指示区分$/, '納入指示区分');
+        const partCol = col(/^品番$/, '品番');
+        const get = (r, c) => normalizeKey(cellVal(ws.getCell(r, c)));
+
+        const stat = { flags: new Array(count).fill(false), rows: 0, user: 0, jit: 0, item: 0 };
+        for (let i = 0; i < count; i++) {
+            const row = first + i;
+            let hit = false;
+            const part = partCol ? get(row, partCol) : '';
+            if (part && KEEP_PARTS.includes(part)) continue;
+            if (userCol && get(row, userCol) !== 'J') { stat.user++; hit = true; }
+            // 「1:ＪＩＴ」のように番号が付いているので外して比べる
+            if (kindCol && get(row, kindCol).replace(/^\d+:/, '') === 'JIT') { stat.jit++; hit = true; }
+            if (items && part && items.has(part)) { stat.item++; hit = true; }
+            if (hit) { stat.flags[i] = true; stat.rows++; }
+        }
+        return stat;
+    }
+
     // ---- CSV ----
     function parseCsv(text) {
         text = text.replace(/^﻿/, '');
@@ -330,13 +383,15 @@
         }));
     }
 
+    // 「対象外」は製番ではないので外す
     function splitSeiban(v) {
-        return str(v).split('/').map(normalizeKey).filter(s => s);
+        return str(v).split('/').map(normalizeKey).filter(s => s && s !== EXCLUDE_TEXT);
     }
 
-    // 注残リストの1列を、納入指示番号をキーに対応表から埋める。候補が複数ある行は「/」でつないで黄色塗り・赤太字にする
-    function fillColumn(ws, first, col, keys, lookup, overwrite) {
-        const stat = { filled: 0, multi: 0, kept: 0 };
+    // 注残リストの1列を、納入指示番号をキーに対応表から埋める。候補が複数ある行は「/」でつないで黄色塗り・赤太字にする。
+    // 対象外の行(excluded)は台帳を引かず、excludedText があればそれを入れる（無ければ空のまま）
+    function fillColumn(ws, first, col, keys, lookup, overwrite, excluded, excludedText) {
+        const stat = { filled: 0, multi: 0, kept: 0, excluded: 0 };
         keys.forEach((k, i) => {
             const cell = ws.getCell(first + i, col);
             const existing = str(cellVal(cell));
@@ -344,6 +399,10 @@
                 // 残した行も、前の色分けやダウンロード時の赤太字のままにならないよう色分けし直す
                 stat.kept++;
                 if (existing.includes('/')) setMultiStyle(cell); else setPlainStyle(cell);
+                return;
+            }
+            if (excluded[i]) {
+                if (excludedText) { setText(cell, excludedText); stat.excluded++; setPlainStyle(cell); }
                 return;
             }
             if (!k || !lookup.has(k)) return;
@@ -558,7 +617,7 @@
         return pairs.length;
     }
 
-    // 入力: zanzan / order / ledgers はどれも { name, read: () => Promise<ArrayBuffer> }、history は CSV の文字（無ければ null）
+    // 入力: zanzan / order / exclude / ledgers はどれも { name, read: () => Promise<ArrayBuffer> }、history は CSV の文字（無ければ null）
     // 出力: 書き込み済みの注残リストと、履歴・変更一覧の CSV
     async function run(opts) {
         const log = opts.log || (() => { });
@@ -575,6 +634,10 @@
         if (opts.order) answers = await readAnswers(opts.order, log, detail);
         else log('発注仕入状況一覧表が指定されていないため、納期回答は入れません');
 
+        let excludeItems = null;
+        if (opts.exclude) excludeItems = await readExcludeItems(opts.exclude, log);
+        else log('対象外品番リストが指定されていないため、品番では対象外にしません');
+
         // ---- 注残リストに書き込む ----
         const original = await opts.zanzan.read();
         const wb = await loadBook(original.slice(0));
@@ -586,15 +649,17 @@
         if (last < first) throw new Error('注残リストにデータがありません。');
 
         const count = last - first + 1;
+        const ex = findExcluded(ws, first, count, excludeItems, log);
         const keys = [];
         let missing = 0;
         for (let i = 0; i < count; i++) {
             keys[i] = normalizeKey(cellVal(ws.getCell(first + i, h.order)));
-            if (keys[i] && !map.has(keys[i])) missing++;
+            if (keys[i] && !ex.flags[i] && !map.has(keys[i])) missing++;
         }
 
-        const s1 = fillColumn(ws, first, h.seiban, keys, map, opts.overwrite);
-        const s2 = fillColumn(ws, first, h.date, keys, dateMap, opts.overwrite);
+        // 対象外の行は FD製番に「対象外」と入れ、部品納期は入れない
+        const s1 = fillColumn(ws, first, h.seiban, keys, map, opts.overwrite, ex.flags, EXCLUDE_TEXT);
+        const s2 = fillColumn(ws, first, h.date, keys, dateMap, opts.overwrite, ex.flags, '');
         let s3 = null, s4 = null, detailRows = 0, history = null, hasRemark = false;
         if (answers) {
             history = readHistory(opts.history);
@@ -630,8 +695,10 @@
 
         log('');
         log(`対象行              : ${count}`);
-        log(`台帳に無かった行    : ${missing}`);
+        log(`対象外の条件に当たる行: ${ex.rows} （ユーザ欄1がJ以外 ${ex.user} / 納入指示区分がJIT ${ex.jit} / 対象外品番 ${ex.item}。重複あり）`);
+        log(`台帳に無かった行    : ${missing} （対象外の行は除く）`);
         log(`FD製番を入れた行    : ${s1.filled} （うち候補が複数で黄色: ${s1.multi}）`);
+        log(`FD製番に「対象外」を入れた行: ${s1.excluded}`);
         log(`部品納期を入れた行  : ${s2.filled} （うち候補が複数で黄色: ${s2.multi}）`);
         if (s3) {
             log(`納期回答を入れた行  : ${s3.filled} （うち製番が複数で黄色: ${s3.multi} / 未回答の明細ありをメモ: ${s3.pending}）`);

@@ -10,7 +10,7 @@
     const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
     // ファイルは { name, handle } (Chrome / Edge) か { name, file } で持つ
-    const state = { zanzan: null, order: null, history: null, ledgers: [] };
+    const state = { zanzan: null, order: null, exclude: null, history: null, ledgers: [] };
     let result = null;
 
     // ---- 選んだファイルの記憶（ファイルの中身ではなく、ファイルへの参照だけを IndexedDB に置く） ----
@@ -29,6 +29,7 @@
             const db = await openDb();
             const handles = {
                 zanzan: state.zanzan && state.zanzan.handle,
+                exclude: state.exclude && state.exclude.handle,
                 history: state.history && state.history.handle,
                 ledgers: state.ledgers.filter(l => l.handle).map(l => l.handle)
             };
@@ -47,6 +48,7 @@
             });
             if (!saved) return;
             if (saved.zanzan) state.zanzan = { name: saved.zanzan.name, handle: saved.zanzan };
+            if (saved.exclude) state.exclude = { name: saved.exclude.name, handle: saved.exclude };
             if (saved.history) state.history = { name: saved.history.name, handle: saved.history };
             state.ledgers = (saved.ledgers || []).map(h => ({ name: h.name, handle: h }));
             render();
@@ -95,6 +97,7 @@
     function render() {
         $('zanzanName').textContent = state.zanzan ? state.zanzan.name : '未選択';
         $('orderName').textContent = state.order ? state.order.name : '未選択';
+        $('excludeName').textContent = state.exclude ? state.exclude.name : '未選択';
         $('historyName').textContent = state.history ? state.history.name : '未選択（初回）';
         const list = $('ledgerList');
         list.textContent = '';
@@ -138,6 +141,15 @@
         render();
     });
     $('orderClear').addEventListener('click', () => { state.order = null; render(); });
+
+    $('excludePick').addEventListener('click', async () => {
+        const [e] = await pick(EXCEL_TYPES, EXCEL_ACCEPT, false);
+        if (!e) return;
+        state.exclude = e;
+        render();
+        saveState();
+    });
+    $('excludeClear').addEventListener('click', () => { state.exclude = null; render(); saveState(); });
 
     $('historyPick').addEventListener('click', async () => {
         const [e] = await pick(CSV_TYPES, '.csv', false);
@@ -184,13 +196,14 @@
             if (!/\.xlsx$/i.test(state.zanzan.name)) throw new Error('注残リストは .xlsx のファイルを選んでください。');
             if (state.ledgers.length === 0) throw new Error('製番台帳を1つ以上追加してください。');
             // 前回のファイルを使うときは、ここでまとめて読む許可をもらう
-            for (const e of [state.zanzan, state.order, state.history, ...state.ledgers]) {
+            for (const e of [state.zanzan, state.order, state.exclude, state.history, ...state.ledgers]) {
                 if (e) await ensurePermission(e, 'read');
             }
             const historyText = state.history ? await (await readEntry(state.history)).text() : null;
             result = await Seiban.run({
                 zanzan: source(state.zanzan),
                 order: state.order ? source(state.order) : null,
+                exclude: state.exclude ? source(state.exclude) : null,
                 ledgers: state.ledgers.map(source),
                 history: historyText,
                 overwrite: $('overwrite').checked,

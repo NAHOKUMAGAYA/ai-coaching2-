@@ -5,6 +5,7 @@
 param(
     [string]$Zanzan = 'C:\Users\n-kumagaya\Desktop\ai-coaching2-\製番転記_納期回答\データ\注残リスト.xlsx',
     [string]$Order = '',   # 発注仕入状況一覧表。省略時は注残リストと同じフォルダの一番新しいもの
+    [string]$Exclude = 'C:\Users\n-kumagaya\Desktop\ai-coaching2-\製番転記_納期回答\データ\指示区分変更依頼追記分(20260911)土岐含む.xlsx',   # 対象外品番リスト。空ならこの条件は使わない
     [string[]]$Ledgers = @(
         '\\192.168.11.200\Share\12.製番台帳\43期製番台帳\（新）4374(AMD単品(富士宮)).xlsx',
         '\\192.168.11.200\Share\12.製番台帳\43期製番台帳\（新）4366(AMD単品(土岐)).xlsx'
@@ -17,17 +18,24 @@ $ErrorActionPreference = 'Stop'
 $SkipSheets = @('記入方法', 'リスト', '休日')
 # 納期回答・回答備考を見るときに無視する発注先番号（この発注先の明細は回答納期が入っていても使わない）
 $IgnoreSuppliers = @('FSH', 'FZH', 'FZH2', 'NK', 'SFD', 'SFH', 'SFZ', 'SM', 'SMF', 'SPH', 'SPM', 'SPP', 'STK')
+# FD製番に「対象外」と入れる条件（どれか1つに当てはまる行）:
+#   ユーザ欄1が J 以外 / 納入指示区分が JIT（手配JIT は含まない）/ 品番が対象外品番リストのこのシートにある
+$ExcludeText = '対象外'
+$ExcludeSheet = '納期回答対象外'
+# 上の条件に当てはまっても対象外にしない品番
+$KeepParts = @('EK0393')
 
 # 画面で選んだ注残リストと製番台帳を覚えておき、次回もそのまま使う
 $SettingsPath = Join-Path $PSScriptRoot '製番転記_設定.json'
 if (Test-Path -LiteralPath $SettingsPath) {
     $saved = Get-Content -LiteralPath $SettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($saved.Zanzan -and -not $PSBoundParameters.ContainsKey('Zanzan')) { $Zanzan = $saved.Zanzan }
+    if ($null -ne $saved.Exclude -and -not $PSBoundParameters.ContainsKey('Exclude')) { $Exclude = $saved.Exclude }
     if ($saved.Ledgers -and -not $PSBoundParameters.ContainsKey('Ledgers')) { $Ledgers = @($saved.Ledgers) }
 }
 
-function Save-Settings([string]$zanzanPath, [string[]]$ledgerPaths) {
-    ConvertTo-Json -InputObject ([ordered]@{ Zanzan = $zanzanPath; Ledgers = @($ledgerPaths) }) |
+function Save-Settings([string]$zanzanPath, [string]$excludePath, [string[]]$ledgerPaths) {
+    ConvertTo-Json -InputObject ([ordered]@{ Zanzan = $zanzanPath; Exclude = $excludePath; Ledgers = @($ledgerPaths) }) |
         Set-Content -LiteralPath $SettingsPath -Encoding UTF8
 }
 # セルの色分け（Excelの色は BGR の数値）
@@ -83,15 +91,16 @@ function Format-Date($v) {
     return "$v".Trim()
 }
 
-# 注残リストの1列を、納入指示番号をキーに対応表から埋める。候補が複数ある行は「/」でつないで黄色塗り・赤太字にする
-function Fill-Column($ws, [int]$first, [int]$col, [string[]]$keys, [hashtable]$lookup, [bool]$overwrite) {
+# 注残リストの1列を、納入指示番号をキーに対応表から埋める。候補が複数ある行は「/」でつないで黄色塗り・赤太字にする。
+# 対象外の行($excluded)は台帳を引かず、$excludedText があればそれを入れる（無ければ空のまま）
+function Fill-Column($ws, [int]$first, [int]$col, [string[]]$keys, [hashtable]$lookup, [bool]$overwrite, [bool[]]$excluded, [string]$excludedText) {
     $count = $keys.Count
     $range = $ws.Range($ws.Cells.Item($first, $col), $ws.Cells.Item($first + $count - 1, $col))
     $current = $range.Value2
     $out = New-Object 'object[,]' $count, 1
     $multiRows = New-Object System.Collections.Generic.List[int]
     $singleRows = New-Object System.Collections.Generic.List[int]
-    $stat = @{ filled = 0; multi = 0; kept = 0 }
+    $stat = @{ filled = 0; multi = 0; kept = 0; excluded = 0 }
 
     for ($i = 0; $i -lt $count; $i++) {
         $existing = $current[($i + 1), 1]
@@ -100,6 +109,10 @@ function Fill-Column($ws, [int]$first, [int]$col, [string[]]$keys, [hashtable]$l
             # 残した行も、前の色分けやダウンロード時の赤太字のままにならないよう色分けし直す
             $stat.kept++
             if ("$existing" -like '*/*') { $multiRows.Add($first + $i) } else { $singleRows.Add($first + $i) }
+            continue
+        }
+        if ($excluded[$i]) {
+            if ($excludedText) { $out[$i, 0] = $excludedText; $stat.excluded++; $singleRows.Add($first + $i) }
             continue
         }
         $k = $keys[$i]
@@ -122,6 +135,62 @@ function Fill-Column($ws, [int]$first, [int]$col, [string[]]$keys, [hashtable]$l
         $cell.Font.Bold = $false
     }
     Release $range
+    return $stat
+}
+
+# 対象外品番リストの「納期回答対象外」シートから品番を読む
+function Read-ExcludeItems($xl, [string]$path, [scriptblock]$log) {
+    & $log "対象外品番リスト読込: $(Split-Path $path -Leaf)"
+    $items = New-Object 'System.Collections.Generic.HashSet[string]'
+    $wb = $xl.Workbooks.Open($path, 0, $true)
+    try {
+        $ws = $null
+        foreach ($s in $wb.Worksheets) { if ($s.Name -eq $ExcludeSheet) { $ws = $s } }
+        if (-not $ws) { throw "対象外品番リストに「$ExcludeSheet」シートが見つかりません。" }
+        $h = Find-Header $ws.Range('A1:Z5').Value2 5 @{ item = '^品番$' }
+        if (-not $h) { throw "対象外品番リストの「$ExcludeSheet」シートに「品番」の見出しが見つかりません。" }
+        $last = $ws.Cells.Item($ws.Rows.Count, $h.item).End(-4162).Row
+        if ($last -gt $h.row) {
+            $v = $ws.Range($ws.Cells.Item(1, $h.item), $ws.Cells.Item($last, $h.item)).Value2
+            for ($r = $h.row + 1; $r -le $last; $r++) {
+                $k = Normalize-Key "$($v[$r, 1])"
+                if ($k) { [void]$items.Add($k) }
+            }
+        }
+        & $log "  シート[$ExcludeSheet] 品番 $($items.Count) 件"
+    } finally {
+        $wb.Close($false)
+        Release $wb
+    }
+    # 先頭の「,」は、HashSet がばらされて配列にならないようにするため
+    return , $items
+}
+
+# FD製番に「対象外」と入れる行を決める。ユーザ欄1が J 以外・納入指示区分が JIT・品番が対象外品番リストにある、のどれかに当てはまる行。
+# 見出しが無い条件は使わない
+function Find-Excluded($ws, [int]$first, [int]$count, $items, [scriptblock]$log) {
+    $last = $first + $count - 1
+    $col = {
+        param($pattern, $label)
+        $h = Find-Header $ws.Range('A1:BZ5').Value2 5 @{ c = $pattern }
+        if (-not $h) { & $log "※注残リストに「$label」の見出しが無いため、この条件では対象外にしません"; return }
+        , $ws.Range($ws.Cells.Item($first, $h.c), $ws.Cells.Item($last, $h.c)).Value2
+    }
+    $users = & $col '^ユーザ欄[1１]$' 'ユーザ欄1'
+    $kinds = & $col '^納入指示区分$' '納入指示区分'
+    $parts = & $col '^品番$' '品番'
+
+    $stat = @{ flags = (New-Object 'bool[]' $count); rows = 0; user = 0; jit = 0; item = 0 }
+    for ($i = 1; $i -le $count; $i++) {
+        $hit = $false
+        $part = if ($null -ne $parts) { Normalize-Key "$($parts[$i, 1])" } else { '' }
+        if ($part -and $KeepParts -contains $part) { continue }
+        if ($null -ne $users -and (Normalize-Key "$($users[$i, 1])") -ne 'J') { $stat.user++; $hit = $true }
+        # 「1:ＪＩＴ」のように番号が付いているので外して比べる
+        if ($null -ne $kinds -and ((Normalize-Key "$($kinds[$i, 1])") -replace '^\d+:', '') -eq 'JIT') { $stat.jit++; $hit = $true }
+        if ($null -ne $items -and $part -and $items.Contains($part)) { $stat.item++; $hit = $true }
+        if ($hit) { $stat.flags[$i - 1] = $true; $stat.rows++ }
+    }
     return $stat
 }
 
@@ -243,7 +312,7 @@ function Fill-Answer($ws, [int]$first, [int]$count, [int]$seibanCol, [int]$col, 
     for ($i = 0; $i -lt $count; $i++) {
         $existing = $current[($i + 1), 1]
         $out[$i, 0] = $existing
-        $list = @("$($seibans[($i + 1), 1])" -split '/' | ForEach-Object { Normalize-Key $_ } | Where-Object { $_ })
+        $list = @("$($seibans[($i + 1), 1])" -split '/' | ForEach-Object { Normalize-Key $_ } | Where-Object { $_ -and $_ -ne $ExcludeText })
         if ($list.Count -eq 0) { continue }
         $max = $null; $pending = $false; $found = $false
         foreach ($s in $list) {
@@ -460,9 +529,10 @@ function Format-Days($days) {
     return ''
 }
 
-function Invoke-Fill([string]$zanzanPath, [string]$orderPath, [string[]]$ledgerPaths, [bool]$overwrite, [scriptblock]$log) {
+function Invoke-Fill([string]$zanzanPath, [string]$orderPath, [string]$excludePath, [string[]]$ledgerPaths, [bool]$overwrite, [scriptblock]$log) {
     if (-not (Test-Path -LiteralPath $zanzanPath)) { throw "注残リストが見つかりません: $zanzanPath" }
     if ($orderPath -and -not (Test-Path -LiteralPath $orderPath)) { throw "発注仕入状況一覧表が見つかりません: $orderPath" }
+    if ($excludePath -and -not (Test-Path -LiteralPath $excludePath)) { throw "対象外品番リストが見つかりません: $excludePath" }
 
     $xl = New-Object -ComObject Excel.Application
     $xl.Visible = $false
@@ -523,6 +593,10 @@ function Invoke-Fill([string]$zanzanPath, [string]$orderPath, [string[]]$ledgerP
         if ($orderPath) { $answers = Read-Answers $xl $orderPath $log $detail }
         else { & $log '発注仕入状況一覧表が指定されていないため、納期回答は入れません' }
 
+        $excludeItems = $null
+        if ($excludePath) { $excludeItems = Read-ExcludeItems $xl $excludePath $log }
+        else { & $log '対象外品番リストが指定されていないため、品番では対象外にしません' }
+
         # ---- 注残リストに書き込む ----
         $wb = $xl.Workbooks.Open($zanzanPath, 0, $false)
         try {
@@ -536,15 +610,17 @@ function Invoke-Fill([string]$zanzanPath, [string]$orderPath, [string[]]$ledgerP
 
             $orders = $ws.Range($ws.Cells.Item($first, $h.order), $ws.Cells.Item($last, $h.order)).Value2
             $count = $last - $first + 1
+            $ex = Find-Excluded $ws $first $count $excludeItems $log
             $keys = New-Object 'string[]' $count
             $missing = 0
             for ($i = 0; $i -lt $count; $i++) {
                 $keys[$i] = Normalize-Key "$($orders[($i + 1), 1])"
-                if ($keys[$i] -and -not $map.ContainsKey($keys[$i])) { $missing++ }
+                if ($keys[$i] -and -not $ex.flags[$i] -and -not $map.ContainsKey($keys[$i])) { $missing++ }
             }
 
-            $s1 = Fill-Column $ws $first $h.seiban $keys $map $overwrite
-            $s2 = Fill-Column $ws $first $h.date $keys $dateMap $overwrite
+            # 対象外の行は FD製番に「対象外」と入れ、部品納期は入れない
+            $s1 = Fill-Column $ws $first $h.seiban $keys $map $overwrite $ex.flags $ExcludeText
+            $s2 = Fill-Column $ws $first $h.date $keys $dateMap $overwrite $ex.flags ''
             $s3 = $null
             $folder = Split-Path $zanzanPath
             $historyPath = Join-Path $folder '納期回答履歴.csv'
@@ -593,8 +669,10 @@ function Invoke-Fill([string]$zanzanPath, [string]$orderPath, [string[]]$ledgerP
 
             & $log ''
             & $log "対象行              : $count"
-            & $log "台帳に無かった行    : $missing"
+            & $log "対象外の条件に当たる行: $($ex.rows) （ユーザ欄1がJ以外 $($ex.user) / 納入指示区分がJIT $($ex.jit) / 対象外品番 $($ex.item)。重複あり）"
+            & $log "台帳に無かった行    : $missing （対象外の行は除く）"
             & $log "FD製番を入れた行    : $($s1.filled) （うち候補が複数で黄色: $($s1.multi)）"
+            & $log "FD製番に「対象外」を入れた行: $($s1.excluded)"
             & $log "部品納期を入れた行  : $($s2.filled) （うち候補が複数で黄色: $($s2.multi)）"
             if ($s3) {
                 & $log "納期回答を入れた行  : $($s3.filled) （うち製番が複数で黄色: $($s3.multi) / 未回答の明細ありをメモ: $($s3.pending)）"
@@ -631,7 +709,7 @@ function Invoke-Fill([string]$zanzanPath, [string]$orderPath, [string[]]$ledgerP
 if (-not $Order) { $Order = Find-OrderFile $Zanzan }
 
 if ($NoGui) {
-    Invoke-Fill $Zanzan $Order $Ledgers $Overwrite.IsPresent { param($m) Write-Host $m }
+    Invoke-Fill $Zanzan $Order $Exclude $Ledgers $Overwrite.IsPresent { param($m) Write-Host $m }
     return
 }
 
@@ -642,7 +720,7 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 $font = New-Object Drawing.Font('Meiryo UI', 9)
 $form = New-Object Windows.Forms.Form
 $form.Text = '注残リスト 製番転記'
-$form.Size = New-Object Drawing.Size(760, 657)
+$form.Size = New-Object Drawing.Size(760, 714)
 $form.StartPosition = 'CenterScreen'
 $form.Font = $font
 
@@ -682,11 +760,30 @@ $btnO.Add_Click({
     $dlg.Dispose()
 })
 
+$lblE = New-Object Windows.Forms.Label
+$lblE.Text = "対象外品番リスト（「$ExcludeSheet」シートの品番はFD製番を「対象外」にします。空欄ならこの条件は使いません）"
+$lblE.Location = New-Object Drawing.Point(12, 129); $lblE.AutoSize = $true
+$txtE = New-Object Windows.Forms.TextBox
+$txtE.Text = $Exclude
+$txtE.Location = New-Object Drawing.Point(12, 149); $txtE.Size = New-Object Drawing.Size(620, 24)
+$txtE.Anchor = 'Top,Left,Right'
+$btnE = New-Object Windows.Forms.Button
+$btnE.Text = '参照...'
+$btnE.Location = New-Object Drawing.Point(640, 147); $btnE.Size = New-Object Drawing.Size(90, 27)
+$btnE.Anchor = 'Top,Right'
+$btnE.Add_Click({
+    $dlg = New-Object Windows.Forms.OpenFileDialog
+    $dlg.Filter = 'Excel|*.xlsx;*.xlsm;*.xls'
+    if ($txtE.Text) { $dlg.InitialDirectory = [IO.Path]::GetDirectoryName($txtE.Text) }
+    if ($dlg.ShowDialog($form) -eq 'OK') { $txtE.Text = $dlg.FileName }
+    $dlg.Dispose()
+})
+
 $lbl2 = New-Object Windows.Forms.Label
 $lbl2.Text = '製番台帳（複数可・ここへファイルをドラッグしても追加できます）'
-$lbl2.Location = New-Object Drawing.Point(12, 129); $lbl2.AutoSize = $true
+$lbl2.Location = New-Object Drawing.Point(12, 186); $lbl2.AutoSize = $true
 $lst = New-Object Windows.Forms.ListBox
-$lst.Location = New-Object Drawing.Point(12, 149); $lst.Size = New-Object Drawing.Size(620, 100)
+$lst.Location = New-Object Drawing.Point(12, 206); $lst.Size = New-Object Drawing.Size(620, 100)
 $lst.Anchor = 'Top,Left,Right'
 $lst.HorizontalScrollbar = $true
 $lst.SelectionMode = 'MultiExtended'
@@ -696,7 +793,7 @@ function Add-Ledgers([string[]]$paths) {
     foreach ($f in $paths) {
         if ($f -match '\.(xlsx|xlsm|xls)$' -and -not $lst.Items.Contains($f)) { [void]$lst.Items.Add($f) }
     }
-    Save-Settings $txtZ.Text @($lst.Items)
+    Save-Settings $txtZ.Text $txtE.Text.Trim() @($lst.Items)
 }
 
 # エクスプローラーから台帳ファイルをドラッグして追加できるようにする
@@ -708,7 +805,7 @@ $lst.Add_DragDrop({ Add-Ledgers $_.Data.GetData([Windows.Forms.DataFormats]::Fil
 
 $btnAdd = New-Object Windows.Forms.Button
 $btnAdd.Text = '追加...'
-$btnAdd.Location = New-Object Drawing.Point(640, 149); $btnAdd.Size = New-Object Drawing.Size(90, 27)
+$btnAdd.Location = New-Object Drawing.Point(640, 206); $btnAdd.Size = New-Object Drawing.Size(90, 27)
 $btnAdd.Anchor = 'Top,Right'
 $btnAdd.Add_Click({
     $dlg = New-Object Windows.Forms.OpenFileDialog
@@ -721,28 +818,28 @@ $btnAdd.Add_Click({
 })
 $btnDel = New-Object Windows.Forms.Button
 $btnDel.Text = '削除'
-$btnDel.Location = New-Object Drawing.Point(640, 182); $btnDel.Size = New-Object Drawing.Size(90, 27)
+$btnDel.Location = New-Object Drawing.Point(640, 239); $btnDel.Size = New-Object Drawing.Size(90, 27)
 $btnDel.Anchor = 'Top,Right'
 $btnDel.Add_Click({
     foreach ($item in @($lst.SelectedItems)) { $lst.Items.Remove($item) }
-    Save-Settings $txtZ.Text @($lst.Items)
+    Save-Settings $txtZ.Text $txtE.Text.Trim() @($lst.Items)
 })
 
 $chk = New-Object Windows.Forms.CheckBox
 $chk.Text = 'すでにFD製番・部品納期が入っている行も上書きする（納期回答は毎回最新に入れ直します）'
 $chk.Checked = $Overwrite.IsPresent
-$chk.Location = New-Object Drawing.Point(12, 259); $chk.AutoSize = $true
+$chk.Location = New-Object Drawing.Point(12, 316); $chk.AutoSize = $true
 
 $btnRun = New-Object Windows.Forms.Button
 $btnRun.Text = '実行'
-$btnRun.Location = New-Object Drawing.Point(640, 255); $btnRun.Size = New-Object Drawing.Size(90, 32)
+$btnRun.Location = New-Object Drawing.Point(640, 312); $btnRun.Size = New-Object Drawing.Size(90, 32)
 $btnRun.Anchor = 'Top,Right'
 
 $txtLog = New-Object Windows.Forms.TextBox
 $txtLog.Multiline = $true
 $txtLog.ReadOnly = $true
 $txtLog.ScrollBars = 'Vertical'
-$txtLog.Location = New-Object Drawing.Point(12, 297); $txtLog.Size = New-Object Drawing.Size(718, 305)
+$txtLog.Location = New-Object Drawing.Point(12, 354); $txtLog.Size = New-Object Drawing.Size(718, 305)
 $txtLog.Anchor = 'Top,Bottom,Left,Right'
 $txtLog.Font = New-Object Drawing.Font('MS Gothic', 9)
 
@@ -757,8 +854,8 @@ $btnRun.Add_Click({
     $form.Cursor = 'WaitCursor'
     $txtLog.Clear()
     try {
-        Save-Settings $txtZ.Text @($lst.Items)
-        Invoke-Fill $txtZ.Text $txtO.Text.Trim() @($lst.Items) $chk.Checked $log
+        Save-Settings $txtZ.Text $txtE.Text.Trim() @($lst.Items)
+        Invoke-Fill $txtZ.Text $txtO.Text.Trim() $txtE.Text.Trim() @($lst.Items) $chk.Checked $log
         [Windows.Forms.MessageBox]::Show($form, '完了しました。', '製番転記') | Out-Null
     } catch {
         & $log "エラー: $($_.Exception.Message)"
@@ -769,6 +866,6 @@ $btnRun.Add_Click({
     }
 })
 
-$form.Controls.AddRange(@($lbl1, $txtZ, $btnZ, $lblO, $txtO, $btnO, $lbl2, $lst, $btnAdd, $btnDel, $chk, $btnRun, $txtLog))
-$form.Add_FormClosing({ try { Save-Settings $txtZ.Text @($lst.Items) } catch { } })
+$form.Controls.AddRange(@($lbl1, $txtZ, $btnZ, $lblO, $txtO, $btnO, $lblE, $txtE, $btnE, $lbl2, $lst, $btnAdd, $btnDel, $chk, $btnRun, $txtLog))
+$form.Add_FormClosing({ try { Save-Settings $txtZ.Text $txtE.Text.Trim() @($lst.Items) } catch { } })
 [void]$form.ShowDialog()

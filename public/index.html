@@ -14,6 +14,7 @@
   <h1>注残リスト 製番転記</h1>
   <p class="lead">
     製番台帳から注残リストの「FD製番」「部品納期」を、発注仕入状況一覧表から「納期回答」「コメント」を埋めます。
+    ユーザ欄1がJ以外・納入指示区分がJIT・対象外品番の行は、FD製番に「対象外」と入れます。
     ファイルはこのパソコンのブラウザの中だけで処理し、インターネットには送りません。
   </p>
 
@@ -29,6 +30,13 @@
       <span id="orderName" class="name">未選択</span>
       <button type="button" id="orderPick">選ぶ...</button>
       <button type="button" id="orderClear" class="sub">外す</button>
+    </div>
+
+    <div class="row">
+      <label>対象外品番リスト<small>「納期回答対象外」シートの品番はFD製番を「対象外」にします。空ならこの条件は使いません</small></label>
+      <span id="excludeName" class="name">未選択</span>
+      <button type="button" id="excludePick">選ぶ...</button>
+      <button type="button" id="excludeClear" class="sub">外す</button>
     </div>
 
     <div class="row ledgers">
