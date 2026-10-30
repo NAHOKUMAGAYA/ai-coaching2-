@@ -102,7 +102,9 @@
             const found = {};
             let n = 0;
             for (let c = 1; c <= maxCol; c++) {
-                const t = str(cellVal(ws.getCell(r, c))).replace(/\s/g, '');
+                // getCell だと空のセルが作られて使用範囲が広がるので findCell で見る
+                const cell = ws.findCell(r, c);
+                const t = cell ? str(cellVal(cell)).replace(/\s/g, '') : '';
                 for (const name of names) {
                     if (!(name in found) && patterns[name].test(t)) { found[name] = c; n++; }
                 }
@@ -701,6 +703,10 @@
             if (rc) { hasRemark = true; s4 = fillRemark(ws, first, count, h.seiban, rc.remark, answers, keys, history, nowText); }
             detailRows = writeDetailSheet(wb, ws, first, count, h.seiban, h.order, h.answer, answers, detail);
         }
+
+        // システムから落としたままの注残リストにはテーマが無い。ExcelJS はそのとき参照だけ書いてテーマ本体を書かず、
+        // Excel で開くと「一部の内容に問題が見つかりました」になるので、既定のテーマを書かせる
+        if (!wb._themes || Object.keys(wb._themes).length === 0) wb._themes = undefined;
 
         const result = {
             original,
