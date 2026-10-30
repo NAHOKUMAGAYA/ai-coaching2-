@@ -3,7 +3,7 @@
 # 使い方: 製番転記.bat をダブルクリック
 #   コマンドで実行する場合: powershell -File 製番転記.ps1 -NoGui [-Zanzan パス] [-Order パス] [-Overwrite]
 param(
-    [string]$Zanzan = 'C:\Users\n-kumagaya\Desktop\ai-coaching2-\納期回答関係\注残リスト.xlsx',
+    [string]$Zanzan = 'C:\Users\n-kumagaya\Desktop\ai-coaching2-\製番転記_納期回答\データ\注残リスト.xlsx',
     [string]$Order = '',   # 発注仕入状況一覧表。省略時は注残リストと同じフォルダの一番新しいもの
     [string[]]$Ledgers = @(
         '\\192.168.11.200\Share\12.製番台帳\43期製番台帳\（新）4374(AMD単品(富士宮)).xlsx',
