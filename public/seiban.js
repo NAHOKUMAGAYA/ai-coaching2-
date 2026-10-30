@@ -330,6 +330,38 @@
         return stat;
     }
 
+    // 注残リストに書き込む列（見出し, 探すときのパターン）。無い列は納入指示番号の右にこの順で挿入する
+    const FILL_COLUMNS = [['FD製番', /^FD製番$/i], ['部品納期', /^部品納期$/i], ['納期回答', /^納期回答$/i], ['コメント', /^(コメント|回答備考)$/i]];
+
+    function addMissingColumns(ws, log) {
+        const h = findHeader(ws, 5, 78, { order: /^納入指示番号$/i });
+        if (!h) return;   // 見出しが無いエラーはこのあとで出す
+        let col = h.order;
+        const added = [];
+        for (const [name, pattern] of FILL_COLUMNS) {
+            const found = findHeader(ws, 5, 78, { c: pattern });
+            if (found) { col = found.c; continue; }
+            col++;
+            ws.spliceColumns(col, 0, []);
+            // 見出しの書式は左隣(納入指示番号など)と同じにする
+            const head = ws.getCell(h.row, col);
+            head.style = JSON.parse(JSON.stringify(ws.getCell(h.row, col - 1).style || {}));
+            head.value = name;
+            ws.getColumn(col).width = 12;
+            widenAutoFilter(ws, col);
+            added.push(name);
+        }
+        if (added.length) log(`注残リストに列を挿入しました: ${added.join('・')}`);
+    }
+
+    // 列を挿入したぶん、オートフィルタの範囲を右へ広げる（ExcelJS は自動では直さない）
+    function widenAutoFilter(ws, col) {
+        const m = typeof ws.autoFilter === 'string' && /^\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)$/.exec(ws.autoFilter);
+        if (!m) return;
+        const end = ws.getColumn(m[3]).number;
+        if (col <= end) ws.autoFilter = `${m[1]}${m[2]}:${ws.getColumn(end + 1).letter}${m[4]}`;
+    }
+
     // ---- CSV ----
     function parseCsv(text) {
         text = text.replace(/^﻿/, '');
@@ -642,8 +674,9 @@
         const original = await opts.zanzan.read();
         const wb = await loadBook(original.slice(0));
         const ws = wb.worksheets[0];
+        addMissingColumns(ws, log);
         const h = findHeader(ws, 5, 78, { order: /^納入指示番号$/i, seiban: /^FD製番$/i, date: /^部品納期$/i, answer: /^納期回答$/i });
-        if (!h) throw new Error('注残リストに「納入指示番号」「FD製番」「部品納期」「納期回答」の見出しが見つかりません。');
+        if (!h) throw new Error('注残リストに「納入指示番号」の見出しが見つかりません。');
         const first = h.row + 1;
         const last = lastRow(ws, h.order);
         if (last < first) throw new Error('注残リストにデータがありません。');

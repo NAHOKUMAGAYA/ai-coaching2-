@@ -194,6 +194,28 @@ function Find-Excluded($ws, [int]$first, [int]$count, $items, [scriptblock]$log)
     return $stat
 }
 
+# 注残リストに書き込む列（見出し → 探すときのパターン）。無い列は納入指示番号の右にこの順で挿入する
+$FillColumns = [ordered]@{ 'FD製番' = '^FD製番$'; '部品納期' = '^部品納期$'; '納期回答' = '^納期回答$'; 'コメント' = '^(コメント|回答備考)$' }
+
+function Add-MissingColumns($ws, [scriptblock]$log) {
+    $h = Find-Header $ws.Range('A1:BZ5').Value2 5 @{ order = '^納入指示番号$' }
+    if (-not $h) { return }   # 見出しが無いエラーはこのあとで出す
+    $col = $h.order
+    $added = New-Object System.Collections.Generic.List[string]
+    foreach ($name in $FillColumns.Keys) {
+        $found = Find-Header $ws.Range('A1:BZ5').Value2 5 @{ c = $FillColumns[$name] }
+        if ($found) { $col = $found.c; continue }
+        $col++
+        # 見出しの書式は左隣(納入指示番号など)と同じにする
+        [void]$ws.Columns.Item($col).Insert(-4161, 0)
+        # Value2 に文字を1つ入れると、あとの列への一括書き込み(Value2 = 配列)が型エラーになるため Value で入れる
+        $ws.Cells.Item($h.row, $col).Value = $name
+        $ws.Columns.Item($col).ColumnWidth = 12
+        $added.Add($name)
+    }
+    if ($added.Count) { & $log "注残リストに列を挿入しました: $($added -join '・')" }
+}
+
 function Find-OrderFile([string]$zanzanPath) {
     $dir = Split-Path $zanzanPath
     if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { return '' }
@@ -602,8 +624,9 @@ function Invoke-Fill([string]$zanzanPath, [string]$orderPath, [string]$excludePa
         try {
             if ($wb.ReadOnly) { throw '注残リストが他で開かれています。Excelで閉じてから実行してください。' }
             $ws = $wb.Worksheets.Item(1)
+            Add-MissingColumns $ws $log
             $h = Find-Header $ws.Range('A1:BZ5').Value2 5 @{ order = '^納入指示番号$'; seiban = '^FD製番$'; date = '^部品納期$'; answer = '^納期回答$' }
-            if (-not $h) { throw '注残リストに「納入指示番号」「FD製番」「部品納期」「納期回答」の見出しが見つかりません。' }
+            if (-not $h) { throw '注残リストに「納入指示番号」の見出しが見つかりません。' }
             $first = $h.row + 1
             $last = $ws.Cells.Item($ws.Rows.Count, $h.order).End(-4162).Row
             if ($last -lt $first) { throw '注残リストにデータがありません。' }
