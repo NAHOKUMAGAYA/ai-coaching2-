@@ -183,10 +183,27 @@
         addLedgers(files.map((f, i) => handles[i] && handles[i].kind === 'file' ? { name: handles[i].name, handle: handles[i] } : { name: f.name, file: f }));
     });
 
+    // 選んだファイル・チェック・処理の記録をすべて消して、初めて開いた状態に戻す
+    $('clear').addEventListener('click', () => {
+        if (!confirm('選んだファイルと処理の記録をすべて消します。よろしいですか？')) return;
+        state.zanzan = null;
+        state.order = null;
+        state.exclude = null;
+        state.history = null;
+        state.ledgers = [];
+        result = null;
+        $('overwrite').checked = false;
+        $('result').hidden = true;
+        logEl.textContent = '';
+        render();
+        saveState();
+    });
+
     // ---- 実行 ----
     $('run').addEventListener('click', async () => {
         const btn = $('run');
         btn.disabled = true;
+        $('clear').disabled = true;
         $('result').hidden = true;
         result = null;
         logEl.textContent = '';
@@ -215,6 +232,7 @@
             alert(e.message);
         } finally {
             btn.disabled = false;
+            $('clear').disabled = false;
         }
     });
 
