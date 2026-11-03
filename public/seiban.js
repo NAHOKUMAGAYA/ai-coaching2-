@@ -140,7 +140,14 @@
         if (!list.includes(value)) list.push(value);
     }
 
+    // ExcelJS は読み込んだファイルの同じ書式のセルで書式オブジェクトを共有しているため、
+    // そのまま cell.fill などを変えると同じ書式の全セル(列全体など)が変わってしまう。変える前にそのセル専用の書式にする
+    function ownStyle(cell) {
+        cell.style = JSON.parse(JSON.stringify(cell.style || {}));
+    }
+
     function setStyle(cell, fill, fontColor, bold) {
+        ownStyle(cell);
         cell.fill = fill ? { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } } : { type: 'pattern', pattern: 'none' };
         const font = Object.assign({}, cell.font);
         delete font.color;
@@ -154,6 +161,7 @@
 
     // 製番や日付が数値に変換されないよう文字列書式にして書き込む
     function setText(cell, value) {
+        ownStyle(cell);
         cell.numFmt = '@';
         cell.value = value === '' ? null : value;
     }
