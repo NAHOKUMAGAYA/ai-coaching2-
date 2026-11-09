@@ -114,6 +114,16 @@
         return null;
     }
 
+    // 表示用の列（事業所名・機種名・品名など）を1つずつ探す。無い列は null にして、ある列だけ使う
+    function findInfoColumns(ws, patterns) {
+        const out = {};
+        for (const [name, pattern] of Object.entries(patterns)) {
+            const h = findHeader(ws, 5, 78, { c: pattern });
+            out[name] = h ? h.c : null;
+        }
+        return out;
+    }
+
     // 列の一番下の値がある行（Excel の End(xlUp) と同じ。何も無ければ 1）
     function lastRow(ws, col) {
         for (let r = ws.rowCount; r > 1; r--) {
@@ -590,7 +600,7 @@
     // 納期回答の元になった明細には★、無視する発注先の明細には「対象外」を付ける
     function writeDetailSheet(wb, ws, first, count, seibanCol, orderCol, answerCol, answers, detail) {
         const sheetName = '発注明細';
-        const info = findHeader(ws, 5, 78, { office: /^事業所名$/i, item: /^品名$/i });
+        const info = findInfoColumns(ws, { office: /^事業所名$/i, item: /^品名$/i });
         const get = (r, c) => cellVal(ws.getCell(r, c));
 
         // 出す行（注残の行, 発注明細の行, その注残の行の一番遅い回答納期）を先に集める
@@ -614,9 +624,9 @@
         for (const [row, r, max] of pairs) {
             const out = [
                 row,
-                info ? str(get(row, info.office)) : '',
+                info.office ? str(get(row, info.office)) : '',
                 str(get(row, orderCol)),
-                info ? str(get(row, info.item)) : '',
+                info.item ? str(get(row, info.item)) : '',
                 str(get(row, seibanCol)),
                 str(get(row, answerCol))
             ];
@@ -728,12 +738,12 @@
         if (s3) {
             result.historyCsv = historyCsv(history);
             if (s3.changes.length > 0) {
-                const info = findHeader(ws, 5, 78, { office: /^事業所名$/i, model: /^機種名$/i, item: /^品名$/i });
-                const text = (r, c) => info ? ws.getCell(r, c).text : '';
+                const info = findInfoColumns(ws, { office: /^事業所名$/i, model: /^機種名$/i, item: /^品名$/i });
+                const text = (r, c) => c ? ws.getCell(r, c).text : '';
                 result.changeCsv = toCsv(['区分', '行', '事業所名', '機種名', '品名', '納入指示番号', 'FD製番', '前回納期回答', '今回納期回答', '差', '前回記録日時'],
                     s3.changes.map(c => ({
                         '区分': c.kind, '行': c.row,
-                        '事業所名': info && text(c.row, info.office), '機種名': info && text(c.row, info.model), '品名': info && text(c.row, info.item),
+                        '事業所名': text(c.row, info.office), '機種名': text(c.row, info.model), '品名': text(c.row, info.item),
                         '納入指示番号': c.key, 'FD製番': c.seiban, '前回納期回答': c.prev, '今回納期回答': c.value,
                         '差': formatDays(c.days), '前回記録日時': c.prevTime
                     })));
