@@ -74,7 +74,13 @@
             return handles.map(h => ({ name: h.name, handle: h }));
         } catch (e) {
             if (e.name === 'AbortError') return [];
-            throw e;
+            // 選べなかった理由が分かるよう、黙って止まらずに知らせる
+            const msg = `ファイルを選べませんでした。\n（${e.name}: ${e.message}）\n\n` +
+                'メールやTeamsから直接開いたファイルや、システムのフォルダにあるファイルは選べないことがあります。' +
+                'デスクトップなどに保存し直してから選んでください。';
+            log(msg);
+            alert(msg);
+            return [];
         }
     }
 
