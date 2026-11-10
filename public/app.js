@@ -67,15 +67,26 @@
         });
     }
 
+    // Edge などで、ファイルを選んでも「キャンセルされた」(AbortError) と返されることがある。
+    // そうなったら、次からは昔ながらのファイル選択(input)を使う（この場合、注残リストへの上書き保存はできずダウンロードになる）
+    const PICK_KEY = 'seiban-tenki-pick';
+    function useInputPicker() {
+        try { return localStorage.getItem(PICK_KEY) === 'input'; } catch (e) { return false; }
+    }
+
     async function pick(types, accept, multiple) {
-        if (!canPick) return pickByInput(accept, multiple);
+        if (!canPick || useInputPicker()) return pickByInput(accept, multiple);
         try {
             const handles = await window.showOpenFilePicker({ types, multiple, excludeAcceptAllOption: false });
             if (handles.length === 0) log('※ファイル選択: ファイルが返ってきませんでした');
             return handles.map(h => ({ name: h.name, handle: h }));
         } catch (e) {
             // キャンセルでも、ブラウザに止められたときも AbortError になることがあるので、内容を下の欄に残す
-            if (e.name === 'AbortError') { log(`※ファイル選択: 選ばれませんでした（${e.name}: ${e.message}）`); return []; }
+            if (e.name === 'AbortError') {
+                try { localStorage.setItem(PICK_KEY, 'input'); } catch (err) { /* 覚えられなくても次の操作はできる */ }
+                log('※ファイルが選ばれませんでした。選んだのに欄が変わらなかったときは、もう一度「選ぶ...」を押してください（別の方法で開きます）。');
+                return [];
+            }
             // 選べなかった理由が分かるよう、黙って止まらずに知らせる
             const msg = `ファイルを選べませんでした。\n（${e.name}: ${e.message}）\n\n` +
                 'メールやTeamsから直接開いたファイルや、システムのフォルダにあるファイルは選べないことがあります。' +
