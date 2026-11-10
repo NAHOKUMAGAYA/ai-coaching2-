@@ -71,9 +71,11 @@
         if (!canPick) return pickByInput(accept, multiple);
         try {
             const handles = await window.showOpenFilePicker({ types, multiple, excludeAcceptAllOption: false });
+            if (handles.length === 0) log('※ファイル選択: ファイルが返ってきませんでした');
             return handles.map(h => ({ name: h.name, handle: h }));
         } catch (e) {
-            if (e.name === 'AbortError') return [];
+            // キャンセルでも、ブラウザに止められたときも AbortError になることがあるので、内容を下の欄に残す
+            if (e.name === 'AbortError') { log(`※ファイル選択: 選ばれませんでした（${e.name}: ${e.message}）`); return []; }
             // 選べなかった理由が分かるよう、黙って止まらずに知らせる
             const msg = `ファイルを選べませんでした。\n（${e.name}: ${e.message}）\n\n` +
                 'メールやTeamsから直接開いたファイルや、システムのフォルダにあるファイルは選べないことがあります。' +
