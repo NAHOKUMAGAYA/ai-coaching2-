@@ -65,6 +65,11 @@ tr.fixed td{background:var(--accent-soft)}
 .fillbox{margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--head)}
 label.chk{color:var(--text);font-size:13px;display:inline-flex;gap:6px;align-items:center;cursor:pointer}
 button.hidden{display:none}
+.pickwrap{position:relative;display:inline-block;margin-left:4px}
+button.cal{padding:4px 8px;line-height:1}
+/* カレンダー本体は見えない日付入力を使い、ボタンの位置に開く */
+#cutoffPick{position:absolute;left:0;bottom:0;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0}
+#cutoffPick.fallback{position:static;width:auto;height:auto;opacity:1;pointer-events:auto;border:1px solid var(--line);padding:2px 4px}
 </style>
 </head>
 <body>
@@ -78,7 +83,7 @@ button.hidden{display:none}
     </div>
     <div class="row">
       <span><label>対象シート </label><select id="sheet" disabled></select></span>
-      <span><label>納入指示日 </label><input type="text" id="cutoff" placeholder="例: 20261204" size="12" inputmode="numeric"> <label>まで（空欄＝全件）</label> <button id="applyCut" type="button">適用</button></span>
+      <span><label>納入指示日 </label><input type="text" id="cutoff" placeholder="例: 20261204" size="12" inputmode="numeric"><span class="pickwrap"><button id="pickCut" type="button" class="sec cal" title="カレンダーから選ぶ" aria-label="カレンダーから選ぶ">📅</button><input type="date" id="cutoffPick" tabindex="-1" aria-hidden="true"></span> <label>まで（空欄＝全件）</label> <button id="applyCut" type="button">適用</button></span>
       <button id="export" disabled>集計結果をExcel出力</button>
     </div>
     <div id="status">ファイル未選択</div>
@@ -651,6 +656,89 @@ function xSheet(wb, name, landscape) {
   return ws;
 }
 
+// 南陵工場（J）だけを集計区分ごとに並べた1枚のシート
+const J_LABEL = { s1: '1. 全件', s3: '3. 富士宮のみ', s4: '4. 富士宮・JIT除く', s6: '5. 富士宮・JIT除く・除外品番除く', s5: '参考. JIT除く（全事業所）' };
+const J_RED = ['s4', 's6'];
+function xNanryoSheet(wb, info, fixNote) {
+  const list = LAST.sections.filter(s => s.id !== 's2')
+    .map(s => ({ s, j: s.agg.factories.find(f => f.code === 'J') })).filter(x => x.j);
+  if (!list.length) return;
+  const ws = xSheet(wb, '南陵工場まとめ', true);
+  const lastCol = 1 + list.length * 3;
+  xTitle(ws, 1, '南陵工場（J）まとめ', info);
+  if (fixNote) xCell(ws, 3, 1, fixNote, { font: { size: 9, color: { argb: 'FF9C5700' } }, border: false });
+  const T = { font: { bold: true }, fill: XS.total, border: { ...box(), top: { style: 'medium', color: { argb: XS.navy } } } };
+
+  // --- 集計区分ごとの南陵工場 ---
+  let r = 5;
+  xCell(ws, r, 1, '集計区分ごとの納期回答率', { font: { bold: true, size: 12, color: { argb: XS.navy } }, border: false });
+  r++;
+  ['集計区分', '注残件数', '回答件数', '回答率'].forEach((h, i) => xCell(ws, r, i + 1, h, H));
+  ws.mergeCells(r, 5, r, Math.max(lastCol, 8));
+  xCell(ws, r, 5, '対象', H);
+  for (let c = 6; c <= Math.max(lastCol, 8); c++) xCell(ws, r, c, undefined, H);
+  ws.getRow(r).height = 20;
+  const r0 = r + 1;
+  for (const { s, j } of list) {
+    r++;
+    xCell(ws, r, 1, J_LABEL[s.id] || s.title, { font: { bold: true } });
+    xCell(ws, r, 2, j.n, { numFmt: '#,##0' }); xCell(ws, r, 3, j.a, { numFmt: '#,##0' });
+    xCell(ws, r, 4, rateOf(j.a, j.n), { numFmt: '0.0%', font: { bold: true } });
+    ws.mergeCells(r, 5, r, Math.max(lastCol, 8));
+    xCell(ws, r, 5, s.sumCond || s.cond, { font: { size: 9, color: { argb: XS.gray } }, align: { wrapText: true } });
+    for (let c = 6; c <= Math.max(lastCol, 8); c++) xCell(ws, r, c, undefined);
+    ws.getRow(r).height = 30;
+  }
+  xBars(ws, `D${r0}:D${r}`);
+
+  // --- セグメント別：行＝セグメント、列＝集計区分 ---
+  r += 3;
+  xCell(ws, r, 1, 'セグメント別（集計区分ごと）', { font: { bold: true, size: 12, color: { argb: XS.navy } }, border: false });
+  r++;
+  ws.mergeCells(r, 1, r + 1, 1);
+  xCell(ws, r, 1, 'セグメント', H); xCell(ws, r + 1, 1, undefined, H);
+  list.forEach(({ s }, i) => {
+    const c0 = 2 + i * 3;
+    ws.mergeCells(r, c0, r, c0 + 2);
+    xCell(ws, r, c0, J_LABEL[s.id] || s.title, H);
+    xCell(ws, r, c0 + 1, undefined, H); xCell(ws, r, c0 + 2, undefined, H);
+    ['注残件数', '回答件数', '回答率'].forEach((h, k) => xCell(ws, r + 1, c0 + k, h, { ...H, fill: 'FF2F75B5', font: { bold: true, color: { argb: 'FFFFFFFF' }, size: 9 } }));
+  });
+  ws.getRow(r).height = 30;
+  const head = r;
+  r += 2;
+  const segNames = new Map();
+  for (const { j } of list) for (const g of j.segs) if (!segNames.has(nk(g.name))) segNames.set(nk(g.name), g.name);
+  const segs = [...segNames].sort((x, y) => x[1].localeCompare(y[1], 'ja'));
+  const s0 = r;
+  for (const [key, name] of segs) {
+    xCell(ws, r, 1, name);
+    list.forEach(({ j }, i) => {
+      const c0 = 2 + i * 3, g = j.segs.find(x => nk(x.name) === key);
+      xCell(ws, r, c0, g ? g.n : null, { numFmt: '#,##0' });
+      xCell(ws, r, c0 + 1, g ? g.a : null, { numFmt: '#,##0' });
+      xCell(ws, r, c0 + 2, g ? rateOf(g.a, g.n) : null, { numFmt: '0.0%' });
+    });
+    r++;
+  }
+  xCell(ws, r, 1, '総計', T);
+  list.forEach(({ s, j }, i) => {
+    const c0 = 2 + i * 3;
+    // 4 と 5 の総計は赤字・太字で目立たせる
+    const TT = J_RED.includes(s.id) ? { ...T, font: { bold: true, color: { argb: 'FFC00000' } } } : T;
+    xCell(ws, r, c0, j.n, { ...TT, numFmt: '#,##0' }); xCell(ws, r, c0 + 1, j.a, { ...TT, numFmt: '#,##0' });
+    xCell(ws, r, c0 + 2, rateOf(j.a, j.n), { ...TT, numFmt: '0.0%' });
+    const col = ws.getColumn(c0 + 2).letter;
+    xBars(ws, `${col}${s0}:${col}${r}`);
+  });
+  xCell(ws, r + 2, 1, '※ 空欄は、その集計区分に該当する行が無いセグメントです。回答率 ＝ 納期回答件数 ÷ 注残件数。', { font: { size: 9, color: { argb: XS.gray } }, border: false });
+
+  ws.getColumn(1).width = 30;
+  for (let c = 2; c <= Math.max(lastCol, 8); c++) ws.getColumn(c).width = 9.5;
+  ws.views = [{ state: 'frozen', xSplit: 1, showGridLines: false }];
+  ws.pageSetup.printTitlesRow = `${head}:${head + 1}`;
+}
+
 function buildStyledWorkbook() {
   const wb = new ExcelJS.Workbook();
   wb.creator = '納期回答率集計';
@@ -698,6 +786,9 @@ function buildStyledWorkbook() {
   cols.forEach((c, i) => { ws.getColumn(3 + i * 3).width = 9; ws.getColumn(4 + i * 3).width = 9; ws.getColumn(5 + i * 3).width = 9; });
   ws.views = [{ state: 'frozen', xSplit: 2, ySplit: 6, showGridLines: false }];
   xCell(ws, r + 1, 1, '※ 回答率 ＝ 納期回答件数 ÷ 注残件数。納期回答日が入っている行を「回答あり」として数えています。', { font: { size: 9, color: { argb: XS.gray } }, border: false });
+
+  // --- 南陵工場（J）だけをまとめたシート ---
+  xNanryoSheet(wb, info, fixNote);
 
   // --- 集計区分ごとのシート ---
   const sheetNames = { s1: '1 工場別', s2: '2 工場別×カテゴリ', s3: '3 富士宮のみ', s4: '4 富士宮・JIT除く', s6: '5 南陵・除外品番除く', s5: '参考 JIT除く' };
@@ -896,6 +987,19 @@ document.getElementById('blankSkip').addEventListener('click', () => document.ge
 document.getElementById('cutoff').addEventListener('change', run);
 document.getElementById('cutoff').addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
 document.getElementById('applyCut').addEventListener('click', run);
+// 納入指示日をカレンダーから選ぶ（選んだ日付は 20261204 の形で入力欄に入れて再集計）
+const cutPick = document.getElementById('cutoffPick');
+document.getElementById('pickCut').addEventListener('click', () => {
+  const m = nk(document.getElementById('cutoff').value).replace(/[^\d]/g, '').match(/^(\d{4})(\d{2})(\d{2})$/);
+  cutPick.value = m ? `${m[1]}-${m[2]}-${m[3]}` : '';
+  try { cutPick.showPicker(); }
+  catch (e) { cutPick.classList.add('fallback'); cutPick.focus(); } // showPicker が使えないブラウザでは日付欄をそのまま表示
+});
+cutPick.addEventListener('change', () => {
+  if (!cutPick.value) return;
+  document.getElementById('cutoff').value = cutPick.value.replace(/-/g, '');
+  run();
+});
 document.getElementById('export').addEventListener('click', exportXlsx);
 if (typeof XLSX === 'undefined') setStatus('Excel読込ライブラリを取得できませんでした（インターネット接続が必要です）。', true);
 window.openBuffer = openBuffer; // テスト用
