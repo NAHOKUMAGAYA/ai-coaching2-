@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>納期回答率集計</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#fff; --text:#1d2330; --muted:#667085; --line:#e3e6eb;
+  --accent:#2563eb; --accent-soft:#e8efff; --good:#15803d; --mid:#b45309; --bad:#b91c1c;
+  --head:#f1f3f6;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#14171c; --panel:#1c2027; --text:#e6e8ec; --muted:#9aa3b2; --line:#2e343e;
+    --accent:#7aa2ff; --accent-soft:#232c40; --good:#4ade80; --mid:#fbbf24; --bad:#f87171; --head:#232830;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Yu Gothic UI","Meiryo",system-ui,sans-serif;font-size:14px;line-height:1.5}
+.wrap{max-width:1200px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 16px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+#drop{border:2px dashed var(--line);border-radius:10px;padding:22px;text-align:center;cursor:pointer;color:var(--muted)}
+#drop.over{border-color:var(--accent);background:var(--accent-soft)}
+.row{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;margin-top:12px}
+label{color:var(--muted);font-size:13px}
+select,input[type=text]{font:inherit;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)}
+button{font:inherit;padding:6px 14px;border-radius:6px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer}
+button:disabled{opacity:.4;cursor:default}
+#status{margin-top:10px;color:var(--muted);font-size:13px;white-space:pre-wrap}
+#status.err{color:var(--bad)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.card .t{font-size:12px;color:var(--muted)}
+.card .v{font-size:26px;font-weight:700;margin-top:2px}
+.card .n{font-size:12px;color:var(--muted)}
+h2{font-size:16px;margin:0 0 2px}
+.cond{color:var(--muted);font-size:12px;margin:0 0 10px}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th,td{border:1px solid var(--line);padding:4px 8px;text-align:right;white-space:nowrap}
+th{background:var(--head);font-weight:600;text-align:center}
+td.l{text-align:left}
+tr.total td{font-weight:700;background:var(--head)}
+.bar{display:inline-block;height:8px;border-radius:4px;background:var(--accent);vertical-align:middle;margin-right:6px;opacity:.75}
+.seg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px;margin-top:12px}
+.seg-grid h3{font-size:13px;margin:0 0 4px}
+details summary{cursor:pointer;color:var(--accent);margin-top:10px;font-size:13px}
+.tablewrap{overflow-x:auto}
+.diag td,.diag th{font-size:12px}
+.hidden{display:none}
+button.sec{background:var(--panel);color:var(--accent)}
+.warnbar{margin-top:10px;padding:8px 12px;border:1px solid var(--mid);border-radius:8px;color:var(--mid);display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.warnbar.hidden{display:none}
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--text);padding:18px;width:min(1000px,calc(100vw - 32px));max-height:calc(100vh - 40px)}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+dialog h2{color:var(--mid)}
+.dlg-body{overflow:auto;max-height:55vh;border:1px solid var(--line);border-radius:6px}
+.dlg-body table td,.dlg-body table th{font-size:12px}
+.dlg-body th{position:sticky;top:0}
+tr.fixed td{background:var(--accent-soft)}
+.fillbox{margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--head)}
+label.chk{color:var(--text);font-size:13px;display:inline-flex;gap:6px;align-items:center;cursor:pointer}
+button.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>納期回答率集計</h1>
+  <p class="sub">注残リスト（Excel）を読み込み、納期回答日が入っている件数から納期回答率を集計します。ファイルはこのPCのブラウザ内だけで処理され、外部へ送信されません。</p>
+
+  <div class="panel">
+    <div id="drop">ここに注残リスト（.xlsx / .xls / .csv）をドロップ、またはクリックして選択
+      <input id="file" type="file" accept=".xlsx,.xlsm,.xls,.csv" class="hidden">
+    </div>
+    <div class="row">
+      <span><label>対象シート </label><select id="sheet" disabled></select></span>
+      <span><label>納入指示日 </label><input type="text" id="cutoff" placeholder="例: 20261204" size="12" inputmode="numeric"> <label>まで（空欄＝全件）</label> <button id="applyCut" type="button">適用</button></span>
+      <button id="export" disabled>集計結果をExcel出力</button>
+    </div>
+    <div id="status">ファイル未選択</div>
+    <div class="fillbox">
+      <div class="row" style="margin-top:0">
+        <label class="chk"><input type="checkbox" id="useFill" checked> ユーザ欄１が空白の行を「工場区分空白埋め用」リストで埋める（品番で照合）</label>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button id="loadFill" type="button" class="sec">リストを読み込む</button>
+        <input id="fillFile" type="file" accept=".xlsx,.xlsm,.xls,.csv" class="hidden">
+        <span id="fillInfo" class="cond" style="margin:0;flex:1 1 320px;white-space:pre-wrap">リスト未登録</span>
+        <button id="clearFill" type="button" class="sec hidden">登録解除</button>
+      </div>
+    </div>
+    <div id="blankBar" class="warnbar hidden"><span id="blankBarMsg"></span> <button id="openBlank" type="button" class="sec">空白行を確認・修正</button></div>
+  </div>
+
+  <dialog id="blankDlg">
+    <h2 id="blankTitle">⚠ ユーザ欄１が空白の行があります</h2>
+    <p class="cond">各行の工場を選んで「修正して再集計」を押してください。未選択の行は「(空白)」として集計されます。元のExcelファイルは変更されません。</p>
+    <div class="row" style="margin:0 0 8px">
+      <span><label>未設定の行をまとめて </label><select id="bulkSel"></select> <button id="bulkApply" type="button" class="sec">にする</button></span>
+    </div>
+    <div class="dlg-body"><table id="blankTable"></table></div>
+    <div class="row" style="justify-content:flex-end">
+      <button id="blankSkip" type="button" class="sec">空白のまま集計</button>
+      <button id="blankFix" type="button">修正して再集計</button>
+    </div>
+  </dialog>
+
+  <div id="result" class="hidden">
+    <div class="cards" id="cards"></div>
+    <div id="sections"></div>
+    <div class="panel">
+      <details>
+        <summary>チェック用：ユーザ欄１の変換結果・読込情報</summary>
+        <div id="diag" style="margin-top:10px"></div>
+      </details>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+// ===== 設定 =====
+const FACTORY_LABEL = { F: '本社工場', H: '厚木事業所', J: '南陵工場' };
+const FACTORY_ORDER = ['F', 'H', 'J'];
+const COLS = {
+  site: '事業所名', seg: 'セグメント', answer: '納期回答日',
+  kubun: '納入指示区分', user1: 'ユーザ欄1', instDate: '納入指示日',
+  part: '品番', instNo: '納入指示番号', place: '納入場所', vendor: '取引先名'
+};
+const REQUIRED = ['site', 'seg', 'answer', 'kubun', 'user1'];
+
+// ===== 正規化 =====
+const nk = v => (v == null ? '' : String(v)).normalize('NFKC').replace(/[\s　]+/g, ' ').trim();
+const headerKey = v => nk(v).replace(/\s/g, '');
+
+// ユーザ欄１ → 工場コード（半角全角・大小文字は区別しない）
+//   FJ… → J、J… → J、それ以外はそのまま
+function factoryOf(v) {
+  const s = nk(v).toUpperCase().replace(/\s/g, '');
+  if (!s) return '(空白)';
+  if (s.startsWith('FJ') || s.startsWith('J')) return 'J';
+  return s;
+}
+// 納入指示区分が「JIT」か（「手配JIT」は対象外）。例: "1:ＪＩＴ" → true
+function isJIT(v) {
+  return nk(v).toUpperCase().replace(/^\d+\s*:\s*/, '').replace(/\s/g, '') === 'JIT';
+}
+const isFujinomiya = v => nk(v) === '富士宮';
+const answered = v => nk(v) !== '';
+
+// 日付 → yyyy-mm-dd（Excelシリアル値・文字列どちらも対応）
+function toYmd(v) {
+  if (v == null || v === '') return '';
+  if (typeof v === 'number') {
+    const d = XLSX.SSF.parse_date_code(v);
+    if (!d) return '';
+    return `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
+  }
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  const m = nk(v).match(/^(\d{4})[-\/.年](\d{1,2})[-\/.月](\d{1,2})/);
+  return m ? `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` : '';
+}
+
+// ===== 読込 =====
+let WB = null, FILE_NAME = '', LAST = null;
+// ユーザ欄１が空白の行の手修正（キー: Excel行番号 → 工場コード）。ファイル・シートを変えるとリセット
+let OVERRIDES = new Map(), SEEN = new Set(), BLANK_ROWS = [], DIALOG_ROWS = [];
+function resetFixes() { OVERRIDES = new Map(); SEEN = new Set(); BLANK_ROWS = []; DIALOG_ROWS = []; }
+
+// ===== 工場区分空白埋め用リスト =====
+// キーは品番：品番が一致すれば納入指示番号が違ってもそのコードを入れる。
+// 同じ品番にリスト内で複数のコードがある場合は、納入指示番号も一致する行のコードを使い、無ければ手修正に回す。
+// ブラウザに保存して次回も使う
+const FILL_KEY = 'nouki-kaitou.fillList.v1';
+const fkey = v => nk(v).toUpperCase().replace(/\s/g, '');
+let FILL = null;
+
+function buildFill(entries, name, date) {
+  const byPart = new Map(), byPartInst = new Map();
+  for (const [inst, part, fac] of entries) {
+    if (!part) continue;
+    if (!byPart.has(part)) byPart.set(part, new Set());
+    byPart.get(part).add(fac);
+    if (inst) byPartInst.set(part + '|' + inst, fac);
+  }
+  const conflictParts = [...byPart].filter(([, s]) => s.size > 1).map(([p, s]) => `${p}(${[...s].join('/')})`);
+  return { entries, byPart, byPartInst, conflictParts, name, date };
+}
+
+function readFillWorkbook(buf, name) {
+  const wb = XLSX.read(buf, { type: 'array' });
+  for (const sn of wb.SheetNames) {
+    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: false, defval: '' });
+    for (let r = 0; r < Math.min(aoa.length, 30); r++) {
+      const keys = (aoa[r] || []).map(headerKey);
+      const iU = keys.indexOf(COLS.user1), iI = keys.indexOf(COLS.instNo), iP = keys.indexOf(COLS.part);
+      if (iU < 0 || iP < 0) continue;
+      const entries = [];
+      for (let k = r + 1; k < aoa.length; k++) {
+        const a = aoa[k] || [];
+        const fac = factoryOf(a[iU]);
+        if (fac === '(空白)') continue;
+        const inst = iI >= 0 ? fkey(a[iI]) : '', part = iP >= 0 ? fkey(a[iP]) : '';
+        if (part) entries.push([inst, part, fac]);
+      }
+      if (!entries.length) throw new Error('ユーザ欄１が入っている行がありません。');
+      return buildFill(entries, name, new Date().toLocaleString('ja-JP'));
+    }
+  }
+  throw new Error('見出し行に「ユーザ欄１」と「品番」が見つかりません。');
+}
+
+function saveFill() {
+  try {
+    if (FILL) localStorage.setItem(FILL_KEY, JSON.stringify({ name: FILL.name, date: FILL.date, entries: FILL.entries }));
+    else localStorage.removeItem(FILL_KEY);
+  } catch (e) { /* 保存できない環境では今回のみ有効 */ }
+}
+function restoreFill() {
+  try {
+    const s = JSON.parse(localStorage.getItem(FILL_KEY) || 'null');
+    if (s && Array.isArray(s.entries)) FILL = buildFill(s.entries, s.name, s.date);
+  } catch (e) { FILL = null; }
+}
+function showFillInfo() {
+  const el = document.getElementById('fillInfo');
+  el.textContent = FILL
+    ? `登録済み: ${FILL.name}（${FILL.entries.length.toLocaleString()} 行、品番 ${FILL.byPart.size.toLocaleString()} 種類）登録日時 ${FILL.date}` +
+      (FILL.conflictParts.length ? `\n※ リスト内でコードが複数ある品番 ${FILL.conflictParts.length} 件: ${FILL.conflictParts.join('、')}（納入指示番号も一致する行のコードを使用。無ければ手修正）` : '')
+    : 'リスト未登録（「リストを読み込む」で工場区分空白埋め用.xlsx を選択してください。一度読み込むとこのブラウザに保存されます）';
+  document.getElementById('clearFill').classList.toggle('hidden', !FILL);
+}
+// 空白行の工場をリストから探す
+function lookupFill(r) {
+  if (!FILL || !document.getElementById('useFill').checked) return null;
+  const p = fkey(r.part);
+  if (!p || !FILL.byPart.has(p)) return null;
+  const s = FILL.byPart.get(p);
+  if (s.size === 1) return [[...s][0], 'リスト(品番)'];
+  const f = FILL.byPartInst.get(p + '|' + fkey(r.instNo));
+  if (f) return [f, 'リスト(品番+納入指示番号)'];
+  return null; // コードが複数あって決められない → 手修正
+}
+// 手修正画面に出す候補（品番にコードが複数ある場合）
+function fillHint(r) {
+  if (!FILL) return '';
+  const s = FILL.byPart.get(fkey(r.part));
+  return s && s.size > 1 ? `リストに ${[...s].join('/')}` : '';
+}
+
+function findHeader(aoa) {
+  for (let r = 0; r < Math.min(aoa.length, 30); r++) {
+    const keys = (aoa[r] || []).map(headerKey);
+    if (keys.includes(COLS.answer) && keys.includes(COLS.user1)) {
+      const idx = {};
+      for (const [k, name] of Object.entries(COLS)) idx[k] = keys.indexOf(name);
+      return { row: r, idx };
+    }
+  }
+  return null;
+}
+
+function loadRows(ws) {
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+  const h = findHeader(aoa);
+  if (!h) return { error: `見出し行に「${COLS.answer}」「ユーザ欄１」が見つかりません。` };
+  const missing = REQUIRED.filter(k => h.idx[k] < 0).map(k => COLS[k]);
+  if (missing.length) return { error: '必要な列が見つかりません: ' + missing.join('、') };
+  const rows = [];
+  // データ範囲：見出しの次の行から、最初の空白行の手前まで（表の下に置かれた集計表等を除外）
+  for (let r = h.row + 1; r < aoa.length; r++) {
+    const a = aoa[r];
+    if (!a || a.every(c => nk(c) === '')) break;
+    const g = k => (h.idx[k] >= 0 ? a[h.idx[k]] : '');
+    rows.push({
+      site: g('site'), seg: nk(g('seg')) || '(空白)', answer: g('answer'),
+      kubun: g('kubun'), user1: g('user1'), inst: toYmd(g('instDate')),
+      excelRow: r + 1, part: nk(g('part')), instNo: nk(g('instNo')), place: nk(g('place')), vendor: nk(g('vendor'))
+    });
+  }
+  return { rows, headerRow: h.row + 1, hasInstDate: h.idx.instDate >= 0 };
+}
+
+function sheetScore(ws) {
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '', sheetRows: 30 });
+  return findHeader(aoa) ? 1 : 0;
+}
+
+async function openFile(file) {
+  setStatus('読込中… ' + file.name);
+  try {
+    const buf = await file.arrayBuffer();
+    openBuffer(buf, file.name);
+  } catch (e) { setStatus('読込に失敗しました: ' + e.message, true); }
+}
+
+function openBuffer(buf, name) {
+  WB = XLSX.read(buf, { type: 'array', cellDates: false });
+  FILE_NAME = name;
+  resetFixes();
+  const sel = document.getElementById('sheet');
+  sel.innerHTML = '';
+  let first = -1;
+  WB.SheetNames.forEach((n, i) => {
+    const ok = sheetScore(WB.Sheets[n]);
+    if (ok && first < 0) first = i;
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n + (ok ? '' : '（対象外）');
+    sel.appendChild(o);
+  });
+  sel.disabled = false;
+  if (first < 0) { setStatus('注残リストの見出し行（納期回答日・ユーザ欄１）を含むシートが見つかりません。', true); return; }
+  sel.selectedIndex = first;
+  run();
+}
+
+// ===== 集計 =====
+function aggregate(rows, withSeg) {
+  const fac = new Map();
+  let N = 0, A = 0;
+  for (const r of rows) {
+    const f = r.factory, a = r.ans ? 1 : 0;
+    N++; A += a;
+    if (!fac.has(f)) fac.set(f, { n: 0, a: 0, seg: new Map() });
+    const o = fac.get(f); o.n++; o.a += a;
+    if (withSeg) {
+      const key = nk(r.seg);
+      if (!o.seg.has(key)) o.seg.set(key, { name: r.seg, n: 0, a: 0 });
+      const s = o.seg.get(key); s.n++; s.a += a;
+    }
+  }
+  const order = [...fac.keys()].sort((x, y) => {
+    const ix = FACTORY_ORDER.indexOf(x), iy = FACTORY_ORDER.indexOf(y);
+    if (ix >= 0 || iy >= 0) return (ix < 0 ? 99 : ix) - (iy < 0 ? 99 : iy);
+    return x.localeCompare(y, 'ja');
+  });
+  return {
+    total: { n: N, a: A },
+    factories: order.map(code => {
+      const o = fac.get(code);
+      const segs = [...o.seg.values()].sort((x, y) => x.name.localeCompare(y.name, 'ja'));
+      return { code, label: FACTORY_LABEL[code] || '', n: o.n, a: o.a, segs };
+    })
+  };
+}
+
+function run() {
+  if (!WB) return;
+  const sheetName = document.getElementById('sheet').value;
+  const res = loadRows(WB.Sheets[sheetName]);
+  if (res.error) { setStatus(`シート「${sheetName}」: ${res.error}`, true); hide(); return; }
+  const cutRaw = nk(document.getElementById('cutoff').value);
+  let cutoff = '';
+  if (cutRaw) {
+    const m = cutRaw.replace(/[^\d\/\-.]/g, '').match(/^(\d{4})[\/\-.]?(\d{1,2})[\/\-.]?(\d{1,2})$/);
+    const ok = m && +m[2] >= 1 && +m[2] <= 12 && +m[3] >= 1 && +m[3] <= 31;
+    if (!ok) { setStatus(`納入指示日「${cutRaw}」を日付として読めません。20261204 や 2026/12/04 の形式で入力してください。`, true); hide(); return; }
+    cutoff = `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  }
+  let rows = res.rows.map(r => {
+    const orig = factoryOf(r.user1);
+    let fix = '', src = '';
+    if (orig === '(空白)') {
+      const m = OVERRIDES.get(r.excelRow);
+      if (m) { fix = m; src = '手修正'; }
+      else { const f = lookupFill(r); if (f) [fix, src] = f; }
+    }
+    return { ...r, origFactory: orig, factory: fix || orig, fixed: !!fix, fillSrc: src, ans: answered(r.answer) };
+  });
+  const before = rows.length;
+  if (cutoff) {
+    if (!res.hasInstDate) { setStatus('「納入指示日」列が無いため日付指定は無視しました。', true); }
+    else rows = rows.filter(r => r.inst && r.inst <= cutoff);
+  }
+  // ユーザ欄１が空白の行（集計範囲内）
+  BLANK_ROWS = rows.filter(r => r.origFactory === '(空白)');
+  const blankF = rows.filter(r => r.factory === '(空白)').length;
+  const fixedN = rows.filter(r => r.fixed).length;
+  const listN = BLANK_ROWS.filter(r => r.fillSrc.startsWith('リスト')).length;
+  const manualN = BLANK_ROWS.filter(r => r.fillSrc === '手修正').length;
+  // 手修正の画面に出すのは、リストで埋まらなかった行
+  DIALOG_ROWS = BLANK_ROWS.filter(r => !r.fillSrc.startsWith('リスト'));
+  const fuji = rows.filter(r => isFujinomiya(r.site));
+  const fujiNoJit = fuji.filter(r => !isJIT(r.kubun));
+  const noJitAll = rows.filter(r => !isJIT(r.kubun));
+
+  const sections = [
+    { id: 's1', title: '1. 工場別', cond: '全件（注残リスト全体）', agg: aggregate(rows, true), showSeg: false },
+    { id: 's2', title: '2. 工場別 × カテゴリ（セグメント）別', cond: '全件（注残リスト全体）', agg: null, ref: 0, showSeg: 'only' },
+    { id: 's3', title: '3. 富士宮のみ・工場別', cond: '事業所名＝富士宮', agg: aggregate(fuji, true), showSeg: 'fold' },
+    { id: 's4', title: '4. 富士宮のみ・JIT除く・工場別', cond: '事業所名＝富士宮、かつ納入指示区分「JIT」を除外（手配JITは含む）', agg: aggregate(fujiNoJit, true), showSeg: 'fold' },
+    { id: 's5', title: '参考. JIT除く（全事業所）・工場別', cond: '納入指示区分「JIT」を除外（手配JITは含む）。サンプルの「※手配JIT含める」表に相当', agg: aggregate(noJitAll, true), showSeg: 'fold' }
+  ];
+  sections[1].agg = sections[0].agg;
+  LAST = { sections, sheetName, cutoff, count: rows.length, fixes: rows.filter(r => r.fixed) };
+
+  render(sections);
+  renderDiag(res.rows, before, rows.length, res.headerRow, sheetName);
+  setStatus(`ファイル: ${FILE_NAME} ／ シート: ${sheetName} ／ 対象 ${rows.length.toLocaleString()} 件` +
+    (cutoff ? `（納入指示日 ${cutoff} まで。全 ${before.toLocaleString()} 件中）` : '') +
+    (fixedN ? `\nユーザ欄１の空白 ${fixedN.toLocaleString()} 件を補完して集計しています（リスト ${listN.toLocaleString()} 件、手修正 ${manualN.toLocaleString()} 件）。` : ''));
+  document.getElementById('export').disabled = false;
+  document.getElementById('result').classList.remove('hidden');
+
+  // 空白行の通知
+  const bar = document.getElementById('blankBar');
+  if (BLANK_ROWS.length) {
+    const total = BLANK_ROWS.length.toLocaleString();
+    const byList = listN ? `うち「工場区分空白埋め用」リストで ${listN.toLocaleString()} 件を埋めました。` : '';
+    document.getElementById('blankBarMsg').textContent = blankF
+      ? `⚠ ユーザ欄１が空白の行が ${total} 件あります。${byList}残り ${blankF.toLocaleString()} 件が未設定です（工場「(空白)」として集計中）。`
+      : `✓ ユーザ欄１が空白の行 ${total} 件はすべて埋めました（リスト ${listN.toLocaleString()} 件、手修正 ${manualN.toLocaleString()} 件）。`;
+    bar.classList.remove('hidden');
+    document.getElementById('openBlank').classList.toggle('hidden', !DIALOG_ROWS.length);
+    // リストで埋まらず、まだ確認していない空白行があれば、メッセージを表示
+    if (DIALOG_ROWS.some(r => !SEEN.has(r.excelRow))) openBlankDialog();
+  } else bar.classList.add('hidden');
+}
+
+// ===== 表示 =====
+const pct = (a, n) => (n ? (a / n * 100).toFixed(1) + '%' : '-');
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function rateCell(a, n) {
+  const w = n ? Math.round(a / n * 60) : 0;
+  return `<td><span class="bar" style="width:${w}px"></span>${pct(a, n)}</td>`;
+}
+
+function factoryTable(agg) {
+  let h = '<div class="tablewrap"><table><tr><th>工場</th><th>ユーザ欄１</th><th>注残件数</th><th>納期回答件数</th><th>納期回答率</th></tr>';
+  for (const f of agg.factories)
+    h += `<tr><td class="l">${esc(f.label)}</td><td class="l">${esc(f.code)}</td><td>${f.n.toLocaleString()}</td><td>${f.a.toLocaleString()}</td>${rateCell(f.a, f.n)}</tr>`;
+  h += `<tr class="total"><td class="l" colspan="2">総計</td><td>${agg.total.n.toLocaleString()}</td><td>${agg.total.a.toLocaleString()}</td>${rateCell(agg.total.a, agg.total.n)}</tr></table></div>`;
+  return h;
+}
+function segTables(agg) {
+  let h = '<div class="seg-grid">';
+  for (const f of agg.factories) {
+    h += `<div><h3>【${esc(f.label || f.code)}】${esc(f.label ? f.code : '')}</h3><div class="tablewrap"><table><tr><th>セグメント</th><th>注残件数</th><th>納期回答件数</th><th>納期回答率</th></tr>`;
+    for (const s of f.segs)
+      h += `<tr><td class="l">${esc(s.name)}</td><td>${s.n.toLocaleString()}</td><td>${s.a.toLocaleString()}</td>${rateCell(s.a, s.n)}</tr>`;
+    h += `<tr class="total"><td class="l">総計</td><td>${f.n.toLocaleString()}</td><td>${f.a.toLocaleString()}</td>${rateCell(f.a, f.n)}</tr></table></div></div>`;
+  }
+  return h + '</div>';
+}
+
+function render(sections) {
+  const cards = document.getElementById('cards');
+  cards.innerHTML = sections.filter(s => s.id !== 's2').map(s =>
+    `<div class="card"><div class="t">${esc(s.title)}</div><div class="v">${pct(s.agg.total.a, s.agg.total.n)}</div>` +
+    `<div class="n">${s.agg.total.a.toLocaleString()} / ${s.agg.total.n.toLocaleString()} 件</div></div>`).join('');
+  document.getElementById('sections').innerHTML = sections.map(s => {
+    let body = '';
+    if (s.showSeg === 'only') body = segTables(s.agg);
+    else {
+      body = factoryTable(s.agg);
+      if (s.showSeg === 'fold') body += `<details><summary>セグメント別の内訳を表示</summary>${segTables(s.agg)}</details>`;
+    }
+    return `<div class="panel" id="${s.id}"><h2>${esc(s.title)}</h2><p class="cond">対象: ${esc(s.cond)}</p>${body}</div>`;
+  }).join('');
+}
+
+function renderDiag(allRows, before, after, headerRow, sheetName) {
+  const map = new Map();
+  for (const r of allRows) {
+    const raw = r.user1 === '' ? '(空白)' : String(r.user1);
+    map.set(raw, (map.get(raw) || 0) + 1);
+  }
+  const kub = new Map();
+  for (const r of allRows) { const k = String(r.kubun); kub.set(k, (kub.get(k) || 0) + 1); }
+  let h = `<p class="cond">シート「${esc(sheetName)}」 見出し行: ${headerRow} 行目 ／ 読込行数: ${before.toLocaleString()} ／ 集計対象: ${after.toLocaleString()}</p>`;
+  h += '<div class="seg-grid"><div><h3>ユーザ欄１ → 工場コード</h3><table class="diag"><tr><th>元の値</th><th>集計先</th><th>件数</th></tr>';
+  for (const [raw, n] of [...map].sort((a, b) => b[1] - a[1]))
+    h += `<tr><td class="l">${esc(raw)}</td><td class="l">${esc(factoryOf(raw === '(空白)' ? '' : raw))}</td><td>${n.toLocaleString()}</td></tr>`;
+  h += '</table></div><div><h3>納入指示区分</h3><table class="diag"><tr><th>値</th><th>JIT判定</th><th>件数</th></tr>';
+  for (const [k, n] of [...kub].sort((a, b) => b[1] - a[1]))
+    h += `<tr><td class="l">${esc(k || '(空白)')}</td><td class="l">${isJIT(k) ? '除外' : ''}</td><td>${n.toLocaleString()}</td></tr>`;
+  h += '</table></div></div>';
+  document.getElementById('diag').innerHTML = h;
+}
+
+// ===== Excel出力 =====
+function exportXlsx() {
+  if (!LAST) return;
+  const aoa = [];
+  const rateRows = [];
+  const push = (row, rateCol) => { aoa.push(row); if (rateCol != null) rateRows.push([aoa.length - 1, rateCol]); };
+  push([`納期回答率集計　元ファイル: ${FILE_NAME}　シート: ${LAST.sheetName}` + (LAST.cutoff ? `　納入指示日 ${LAST.cutoff} まで` : '') +
+    (LAST.fixes.length ? `　※ユーザ欄１空白 ${LAST.fixes.length} 件を補完（「ユーザ欄1空白行」シート参照）` : '')]);
+  push([]);
+  for (const s of LAST.sections) {
+    push([s.title]); push(['対象: ' + s.cond]);
+    if (s.showSeg !== 'only') {
+      push(['工場', 'ユーザ欄１', '注残件数', '納期回答件数', '納期回答率']);
+      for (const f of s.agg.factories) push([f.label, f.code, f.n, f.a, f.n ? f.a / f.n : 0], 4);
+      push(['総計', '', s.agg.total.n, s.agg.total.a, s.agg.total.n ? s.agg.total.a / s.agg.total.n : 0], 4);
+      push([]);
+    }
+    if (s.showSeg) {
+      for (const f of s.agg.factories) {
+        push([`【${f.label || f.code}】`, 'セグメント', '注残件数', '納期回答件数', '納期回答率']);
+        for (const g of f.segs) push(['', g.name, g.n, g.a, g.n ? g.a / g.n : 0], 4);
+        push(['', '総計', f.n, f.a, f.n ? f.a / f.n : 0], 4);
+        push([]);
+      }
+    }
+    push([]);
+  }
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  for (const [r, c] of rateRows) {
+    const ref = XLSX.utils.encode_cell({ r, c });
+    if (ws[ref]) ws[ref].z = '0.0%';
+  }
+  ws['!cols'] = [{ wch: 16 }, { wch: 22 }, { wch: 10 }, { wch: 12 }, { wch: 10 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '納期回答率');
+  // ユーザ欄１の空白行と修正内容
+  if (BLANK_ROWS.length) {
+    const fx = [['Excel行', '事業所名', 'セグメント', '品番', '納入指示番号', '納入指示日', '納入場所', '取引先名', '補完後の工場', '埋め込み元']];
+    for (const r of BLANK_ROWS) fx.push([r.excelRow, nk(r.site), r.seg, r.part, r.instNo, r.inst, r.place, r.vendor, r.fixed ? r.factory : '(空白のまま)', r.fillSrc || '']);
+    const ws2 = XLSX.utils.aoa_to_sheet(fx);
+    ws2['!cols'] = [{ wch: 8 }, { wch: 8 }, { wch: 16 }, { wch: 10 }, { wch: 14 }, { wch: 11 }, { wch: 16 }, { wch: 24 }, { wch: 12 }, { wch: 20 }];
+    XLSX.utils.book_append_sheet(wb, ws2, 'ユーザ欄1空白行');
+  }
+  const base = FILE_NAME.replace(/\.[^.]+$/, '');
+  XLSX.writeFile(wb, `納期回答率集計_${base}.xlsx`);
+}
+
+// ===== UI =====
+function setStatus(msg, err) { const el = document.getElementById('status'); el.textContent = msg; el.className = err ? 'err' : ''; }
+function hide() { document.getElementById('result').classList.add('hidden'); document.getElementById('export').disabled = true; document.getElementById('blankBar').classList.add('hidden'); }
+
+const drop = document.getElementById('drop'), fileIn = document.getElementById('file');
+drop.addEventListener('click', () => fileIn.click());
+fileIn.addEventListener('change', e => { if (e.target.files[0]) openFile(e.target.files[0]); });
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) openFile(e.dataTransfer.files[0]); });
+document.getElementById('sheet').addEventListener('change', () => { resetFixes(); run(); });
+
+// ===== 空白行の確認・修正 =====
+const FIX_CHOICES = () => [...FACTORY_ORDER.map(c => [c, `${c}（${FACTORY_LABEL[c]}）`])];
+function factorySelect(cur) {
+  return `<select class="fixSel"><option value="">未設定（空白のまま）</option>` +
+    FIX_CHOICES().map(([v, t]) => `<option value="${v}"${v === cur ? ' selected' : ''}>${esc(t)}</option>`).join('') + '</select>';
+}
+function openBlankDialog() {
+  const dlg = document.getElementById('blankDlg');
+  const rows = DIALOG_ROWS;
+  if (!rows.length) return;
+  const unset = rows.filter(r => !OVERRIDES.get(r.excelRow)).length;
+  const listN = BLANK_ROWS.length - rows.length;
+  document.getElementById('blankTitle').textContent =
+    `⚠ ユーザ欄１が空白の行が ${rows.length.toLocaleString()} 件あります` +
+    (listN ? `（リストで埋めた ${listN.toLocaleString()} 件を除く）` : '') +
+    (unset < rows.length ? `　未設定 ${unset.toLocaleString()} 件` : '');
+  document.getElementById('bulkSel').innerHTML = FIX_CHOICES().map(([v, t]) => `<option value="${v}">${esc(t)}</option>`).join('');
+  let h = '<tr><th>Excel行</th><th>事業所</th><th>セグメント</th><th>品番</th><th>納入指示番号</th><th>納入指示日</th><th>納入場所</th><th>取引先名</th><th>備考</th><th>工場</th></tr>';
+  for (const r of rows) {
+    const cur = OVERRIDES.get(r.excelRow) || '';
+    h += `<tr data-row="${r.excelRow}"${cur ? ' class="fixed"' : ''}><td>${r.excelRow}</td><td class="l">${esc(nk(r.site))}</td><td class="l">${esc(r.seg)}</td>` +
+      `<td class="l">${esc(r.part)}</td><td class="l">${esc(r.instNo)}</td><td>${esc(r.inst)}</td><td class="l">${esc(r.place)}</td><td class="l">${esc(r.vendor)}</td><td class="l">${esc(fillHint(r))}</td><td>${factorySelect(cur)}</td></tr>`;
+  }
+  const tbl = document.getElementById('blankTable');
+  tbl.innerHTML = h;
+  tbl.querySelectorAll('.fixSel').forEach(s => s.addEventListener('change', () => s.closest('tr').classList.toggle('fixed', !!s.value)));
+  rows.forEach(r => SEEN.add(r.excelRow));
+  if (!dlg.open) dlg.showModal();
+}
+document.getElementById('openBlank').addEventListener('click', openBlankDialog);
+
+// 空白埋め用リストの読込・切替
+document.getElementById('loadFill').addEventListener('click', () => document.getElementById('fillFile').click());
+document.getElementById('fillFile').addEventListener('change', async e => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  try {
+    FILL = readFillWorkbook(await f.arrayBuffer(), f.name);
+    saveFill(); showFillInfo();
+    document.getElementById('useFill').checked = true;
+    run();
+  } catch (err) { document.getElementById('fillInfo').textContent = `リストを読み込めませんでした（${f.name}）: ${err.message}`; }
+});
+document.getElementById('clearFill').addEventListener('click', () => {
+  if (!confirm('登録済みの「工場区分空白埋め用」リストを解除しますか？（元のExcelファイルは消えません）')) return;
+  FILL = null; saveFill(); showFillInfo(); run();
+});
+document.getElementById('useFill').addEventListener('change', run);
+restoreFill(); showFillInfo();
+window.loadFillBuffer = (buf, name) => { FILL = readFillWorkbook(buf, name); saveFill(); showFillInfo(); run(); }; // テスト用
+document.getElementById('bulkApply').addEventListener('click', () => {
+  const v = document.getElementById('bulkSel').value;
+  document.querySelectorAll('#blankTable .fixSel').forEach(s => { if (!s.value) { s.value = v; s.closest('tr').classList.add('fixed'); } });
+});
+document.getElementById('blankFix').addEventListener('click', () => {
+  document.querySelectorAll('#blankTable tr[data-row]').forEach(tr => {
+    const row = +tr.dataset.row, v = tr.querySelector('.fixSel').value;
+    if (v) OVERRIDES.set(row, v); else OVERRIDES.delete(row);
+  });
+  document.getElementById('blankDlg').close();
+  run();
+});
+document.getElementById('blankSkip').addEventListener('click', () => document.getElementById('blankDlg').close());
+document.getElementById('cutoff').addEventListener('change', run);
+document.getElementById('cutoff').addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
+document.getElementById('applyCut').addEventListener('click', run);
+document.getElementById('export').addEventListener('click', exportXlsx);
+if (typeof XLSX === 'undefined') setStatus('Excel読込ライブラリを取得できませんでした（インターネット接続が必要です）。', true);
+window.openBuffer = openBuffer; // テスト用
+</script>
+</body>
+</html>
