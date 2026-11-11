@@ -351,10 +351,12 @@ function loadRows(ws) {
     rows.push({
       site: g('site'), seg: nk(g('seg')) || '(空白)', answer: g('answer'),
       kubun: g('kubun'), user1: g('user1'), inst: toYmd(g('instDate')),
-      excelRow: r + 1, part: nk(g('part')), instNo: nk(g('instNo')), place: nk(g('place')), vendor: nk(g('vendor'))
+      excelRow: r + 1, part: nk(g('part')), instNo: nk(g('instNo')), place: nk(g('place')), vendor: nk(g('vendor')),
+      raw: a // 明細出力用に元の行をそのまま持つ
     });
   }
-  return { rows, headerRow: h.row + 1, hasInstDate: h.idx.instDate >= 0 };
+  const headers = (aoa[h.row] || []).map(v => nk(v));
+  return { rows, headers, headerRow: h.row + 1, hasInstDate: h.idx.instDate >= 0 };
 }
 
 function sheetScore(ws) {
@@ -461,10 +463,10 @@ function run() {
   const noJitAll = rows.filter(r => !isJIT(r.kubun));
 
   const sections = [
-    { id: 's1', title: '1. 工場別', cond: '全件（注残リスト全体）', agg: aggregate(rows, true), showSeg: false },
+    { id: 's1', title: '1. 工場別', cond: '全件（注残リスト全体）', agg: aggregate(rows, true), showSeg: false, rows },
     { id: 's2', title: '2. 工場別 × カテゴリ（セグメント）別', cond: '全件（注残リスト全体）', agg: null, ref: 0, showSeg: 'only' },
-    { id: 's3', title: '3. 富士宮のみ・工場別', cond: '事業所名＝富士宮', agg: aggregate(fuji, true), showSeg: 'fold' },
-    { id: 's4', title: '4. 富士宮のみ・JIT除く・工場別', cond: '事業所名＝富士宮、かつ納入指示区分「JIT」を除外（手配JITは含む）', agg: aggregate(fujiNoJit, true), showSeg: 'fold' }
+    { id: 's3', title: '3. 富士宮のみ・工場別', cond: '事業所名＝富士宮', agg: aggregate(fuji, true), showSeg: 'fold', rows: fuji },
+    { id: 's4', title: '4. 富士宮のみ・JIT除く・工場別', cond: '事業所名＝富士宮、かつ納入指示区分「JIT」を除外（手配JITは含む）', agg: aggregate(fujiNoJit, true), showSeg: 'fold', rows: fujiNoJit }
   ];
   // 5. 4 のうち南陵工場（J）だけ、除外品番リストの品番を除く
   const ex = exSet();
@@ -474,14 +476,14 @@ function run() {
     sections.push({
       id: 's6', title: '5. 富士宮のみ・JIT除く・南陵工場（J）・除外品番を除く',
       cond: `4 のうちユーザ欄１が J（南陵工場）の行から、「${EXL.name}」の「${EXL.sheet}」シートの品番（${ex.size.toLocaleString()} 品番）に一致する ${(fujiJ.length - kept.length).toLocaleString()} 件を除外`,
-      agg: aggregate(kept, true), showSeg: 'fold',
+      agg: aggregate(kept, true), showSeg: 'fold', rows: kept,
       short: '5. 富士宮・JIT除く・南陵(J)・除外品番除く',
       sumCond: `4 のうち南陵工場（J）のみ。「${EXL.sheet}」シートの品番を除外`
     });
   }
-  sections.push({ id: 's5', title: '参考. JIT除く（全事業所）・工場別', cond: '納入指示区分「JIT」を除外（手配JITは含む）。サンプルの「※手配JIT含める」表に相当', agg: aggregate(noJitAll, true), showSeg: 'fold' });
+  sections.push({ id: 's5', title: '参考. JIT除く（全事業所）・工場別', cond: '納入指示区分「JIT」を除外（手配JITは含む）。サンプルの「※手配JIT含める」表に相当', agg: aggregate(noJitAll, true), showSeg: 'fold', rows: noJitAll });
   sections[1].agg = sections[0].agg;
-  LAST = { sections, sheetName, cutoff, count: rows.length, fixes: rows.filter(r => r.fixed) };
+  LAST = { sections, sheetName, cutoff, count: rows.length, fixes: rows.filter(r => r.fixed), headers: res.headers };
 
   render(sections);
   renderDiag(res.rows, before, rows.length, res.headerRow, sheetName);
@@ -658,6 +660,47 @@ function xSheet(wb, name, landscape) {
 
 // 南陵工場（J）だけを集計区分ごとに並べた1枚のシート
 const J_LABEL = { s1: '1. 全件', s3: '3. 富士宮のみ', s4: '4. 富士宮・JIT除く', s6: '5. 富士宮・JIT除く・除外品番除く', s5: '参考. JIT除く（全事業所）' };
+// ===== 明細（集計区分ごとに、集計に入れた行を元の列のまま出す） =====
+const DETAIL_SHEET = { s1: '明細1 全件', s3: '明細3 富士宮のみ', s4: '明細4 富士宮・JIT除く', s6: '明細5 南陵・除外品番除く', s5: '明細 参考 JIT除く' };
+const DETAIL_ADD = ['Excel行', '集計用工場', '納期回答', '工場の補完'];
+// 見出しが「〜日」の列で Excel の日付シリアル値になっているものは yyyy-mm-dd にする
+function detailCols() {
+  return (LAST.headers || []).map(h => ({ name: h || '', isDate: /日$/.test(h || '') }));
+}
+function detailRow(r, cols) {
+  const out = [r.excelRow, r.factory, r.ans ? '回答あり' : '未回答', r.fillSrc || ''];
+  cols.forEach((c, i) => {
+    let v = r.raw[i];
+    if (v === undefined || v === null) v = '';
+    if (c.isDate && typeof v === 'number' && v > 20000 && v < 80000) v = toYmd(v);
+    out.push(v);
+  });
+  return out;
+}
+function xDetailSheet(wb, s) {
+  const cols = detailCols();
+  const ws = xSheet(wb, DETAIL_SHEET[s.id], true);
+  const hd = [...DETAIL_ADD, ...cols.map(c => c.name)];
+  hd.forEach((h, i) => xCell(ws, 1, i + 1, h, i < DETAIL_ADD.length ? { ...H, fill: 'FF2F75B5' } : H));
+  ws.getRow(1).height = 30;
+  // 行数が多いので、セルごとの書式は付けず値だけ入れる
+  ws.addRows(s.rows.map(r => detailRow(r, cols)));
+  const last = s.rows.length + 1;
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: last, column: hd.length } };
+  ws.views = [{ state: 'frozen', xSplit: 2, ySplit: 1, showGridLines: true }];
+  // 列幅：見出しと先頭300行の中身の長さから決める（全角は2文字分、フィルターボタン分を足す）
+  const vlen = v => [...String(v ?? '')].reduce((n, ch) => n + (/[\u0000-ÿ｡-ﾟ]/.test(ch) ? 1 : 2), 0);
+  const sample = s.rows.slice(0, 300).map(r => detailRow(r, cols));
+  hd.forEach((h, i) => {
+    let w = vlen(h) + 3;
+    for (const row of sample) w = Math.max(w, vlen(row[i]) + 1);
+    ws.getColumn(i + 1).width = Math.min(Math.max(w, 7), 32);
+  });
+  if (s.rows.length) {
+    ws.addConditionalFormatting({ ref: `C2:C${last}`, rules: [{ type: 'containsText', operator: 'containsText', text: '未回答', style: { font: { color: { argb: 'FFC00000' } }, fill: { type: 'pattern', pattern: 'solid', bgColor: { argb: 'FFFCE4E4' } } } }] });
+  }
+}
+
 const J_RED = ['s4', 's6'];
 function xNanryoSheet(wb, info, fixNote) {
   const list = LAST.sections.filter(s => s.id !== 's2')
@@ -795,7 +838,8 @@ function buildStyledWorkbook() {
   for (const s of LAST.sections) {
     const w = xSheet(wb, sheetNames[s.id] || s.title.slice(0, 28), false);
     xTitle(w, 1, s.title);
-    xNote(w, 2, `対象: ${s.cond}`, 5);
+    const dName = DETAIL_SHEET[s.id === 's2' ? 's1' : s.id];
+    xNote(w, 2, `対象: ${s.cond}` + (dName ? `　（明細は「${dName}」シート）` : ''), 5);
     xNote(w, 3, info, 5);
     if (fixNote) xNote(w, 4, fixNote, 5);
     let row = fixNote ? 6 : 5;
@@ -806,6 +850,9 @@ function buildStyledWorkbook() {
     }
     [22, 12, 12, 14, 12].forEach((wd, i) => { w.getColumn(i + 1).width = wd; });
   }
+
+  // --- 明細：集計区分ごとに集計に入れた行（2 は 1 と同じ行なので 明細1 を参照） ---
+  for (const s of LAST.sections) if (s.rows && DETAIL_SHEET[s.id]) xDetailSheet(wb, s);
 
   // --- ユーザ欄１が空白だった行 ---
   if (BLANK_ROWS.length) {
@@ -880,6 +927,13 @@ function exportPlainXlsx() {
   ws['!cols'] = [{ wch: 16 }, { wch: 22 }, { wch: 10 }, { wch: 12 }, { wch: 10 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, '納期回答率');
+  // 明細
+  const dcols = detailCols();
+  for (const s of LAST.sections) {
+    if (!s.rows || !DETAIL_SHEET[s.id]) continue;
+    const wsd = XLSX.utils.aoa_to_sheet([[...DETAIL_ADD, ...dcols.map(c => c.name)], ...s.rows.map(r => detailRow(r, dcols))]);
+    XLSX.utils.book_append_sheet(wb, wsd, DETAIL_SHEET[s.id]);
+  }
   // ユーザ欄１の空白行と修正内容
   if (BLANK_ROWS.length) {
     const fx = [['Excel行', '事業所名', 'セグメント', '品番', '納入指示番号', '納入指示日', '納入場所', '取引先名', '補完後の工場', '埋め込み元']];
