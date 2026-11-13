@@ -111,8 +111,22 @@
         return entry.handle ? entry.handle.getFile() : entry.file;
     }
 
+    // 選んだあとにファイルが保存し直されたり移動されたりすると、ブラウザは古い参照を読めない(NotReadableError)。
+    // そのときは何が起きたか分かる言葉で知らせる
+    async function readAs(entry, kind) {
+        try {
+            const f = await readEntry(entry);
+            return kind === 'text' ? await f.text() : await f.arrayBuffer();
+        } catch (e) {
+            if (e.name === 'NotReadableError' || e.name === 'NotFoundError') {
+                throw new Error(`「${entry.name}」を読めませんでした。選んだあとにファイルが保存し直されたか、移動・削除されたようです。「選ぶ...」でもう一度選んでから実行してください。（${e.name}）`);
+            }
+            throw e;
+        }
+    }
+
     function source(entry) {
-        return { name: entry.name, read: async () => (await readEntry(entry)).arrayBuffer() };
+        return { name: entry.name, read: () => readAs(entry, 'buffer') };
     }
 
     // ---- 表示 ----
@@ -238,7 +252,7 @@
             for (const e of [state.zanzan, state.order, state.exclude, state.history, ...state.ledgers]) {
                 if (e) await ensurePermission(e, 'read');
             }
-            const historyText = state.history ? await (await readEntry(state.history)).text() : null;
+            const historyText = state.history ? await readAs(state.history, 'text') : null;
             result = await Seiban.run({
                 zanzan: source(state.zanzan),
                 order: state.order ? source(state.order) : null,
@@ -445,6 +459,11 @@
                 await writeFile(await dir.getFileHandle(result.changeName, { create: true }), result.changeCsv);
                 log(`納期回答の変更一覧を保存しました: ${result.changeName}`);
             }
+            // 保存したファイルを、次の「実行」でそのまま読み直せるようにしておく（選び直さなくてよい）
+            state.zanzan = { name: zanzan.name, handle: zanzan };
+            if (history) state.history = { name: history.handle.name, handle: history.handle };
+            render();
+            saveState();
             log('');
             log('保存が終わりました。');
         } catch (e) {
