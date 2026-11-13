@@ -70,13 +70,13 @@
     <h2>保存</h2>
     <p id="saveNote"></p>
     <div class="actions">
-      <button type="button" id="saveOver" class="primary" hidden>注残リストに上書き保存</button>
-      <button type="button" id="saveDownload">ダウンロードで保存</button>
+      <button type="button" id="saveOver" class="primary" hidden>保存（選んだ注残リストに上書き）</button>
     </div>
+    <p class="note"><span id="saveDownloadNote" hidden>うまく保存できないときは、</span><button type="button" id="saveDownload" class="sub">ダウンロードフォルダに保存</button></p>
   </section>
 
   <p id="support" class="note" hidden>
-    このブラウザでは選んだファイルへの上書き保存と、台帳の記憶ができません。結果はダウンロードで保存します（Chrome / Edge なら上書き保存できます）。
+    このブラウザでは選んだファイルへの上書き保存と、台帳の記憶ができません。結果はダウンロードフォルダに保存します（Chrome / Edge なら上書き保存できます）。
   </p>
 </main>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js" integrity="sha384-Pqp51FUN2/qzfxZxBCtF0stpc9ONI6MYZpVqmo8m20SoaQCzf+arZvACkLkirlPz" crossorigin="anonymous" referrerpolicy="no-referrer"></script>

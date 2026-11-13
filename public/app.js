@@ -1,4 +1,4 @@
-// 画面の操作。Chrome / Edge では選んだファイルを覚えておき、注残リストへ上書き保存もできる
+// 画面の操作。Chrome / Edge では選んだファイルを覚えておき、選んだ注残リストへ上書き保存し、履歴・変更一覧も同じフォルダに保存する
 (function () {
     'use strict';
 
@@ -8,6 +8,9 @@
     const EXCEL_TYPES = [{ description: 'Excel', accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx', '.xlsm'] } }];
     const CSV_TYPES = [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }];
     const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    // 注残リストのフォルダに上書き保存できるか（Chrome / Edge）。できなければダウンロードで保存する
+    const canSaveFolder = 'showDirectoryPicker' in window;
+    const BACKUP_DIR = 'バックアップ';
 
     // ファイルは { name, handle } (Chrome / Edge) か { name, file } で持つ
     const state = { zanzan: null, order: null, exclude: null, history: null, ledgers: [] };
@@ -68,7 +71,7 @@
     }
 
     // Edge などで、ファイルを選んでも「キャンセルされた」(AbortError) と返されることがある。
-    // そうなったら、次からは昔ながらのファイル選択(input)を使う（この場合、注残リストへの上書き保存はできずダウンロードになる）
+    // そうなったら、次からは昔ながらのファイル選択(input)を使う（この場合も、保存のときに注残リストのフォルダを選べば上書きできる）
     const PICK_KEY = 'seiban-tenki-pick';
     function useInputPicker() {
         try { return localStorage.getItem(PICK_KEY) === 'input'; } catch (e) { return false; }
@@ -256,20 +259,21 @@
     });
 
     function showResult() {
-        const over = canPick && state.zanzan.handle;
-        $('saveOver').hidden = !over;
+        $('saveOver').hidden = !canSaveFolder;
         $('saveOver').disabled = false;
+        $('saveDownloadNote').hidden = !canSaveFolder;
         const parts = [];
-        if (over) parts.push(`「注残リストに上書き保存」は ${state.zanzan.name} を書き換えます。書き換える前の元のファイルは ${result.backupName} としてダウンロードフォルダに残します。`);
-        parts.push(`「ダウンロードで保存」は ${state.zanzan.name} をダウンロードフォルダに保存します。`);
-        if (result.historyCsv) parts.push(state.history && state.history.handle && over
-            ? `納期回答履歴は選んだ ${state.history.name} に上書きします（ダウンロードで保存のときはダウンロードします）。`
-            : '納期回答履歴.csv はダウンロードされるので、注残リストと同じフォルダに置いて次回選んでください。');
-        if (result.changeCsv) parts.push(`納期回答の変更・新規の一覧 ${result.changeName} もダウンロードします。`);
+        if (canSaveFolder) {
+            parts.push(`「保存」を押すと、選んだ注残リスト ${state.zanzan.name} を上書きします。` +
+                `納期回答履歴・変更一覧も同じフォルダに保存し、書き換える前の注残リストは同じフォルダの「${BACKUP_DIR}」フォルダに ${result.backupName} として残します。` +
+                '初めて保存するときは、注残リストのあるフォルダを選ぶ画面が出ます。');
+        } else {
+            parts.push(`このブラウザでは上書き保存ができないので、${state.zanzan.name} と納期回答履歴・変更一覧をダウンロードフォルダに保存します。注残リストと同じフォルダへ移してください。`);
+        }
         $('saveNote').textContent = parts.join(' ');
         $('result').hidden = false;
         log('');
-        log('処理が終わりました。下の「保存」から保存してください（まだ保存されていません）。');
+        log('処理が終わりました。下の「保存」を押してください（まだ保存されていません）。');
     }
 
     function download(name, data, type) {
@@ -283,40 +287,125 @@
         setTimeout(() => URL.revokeObjectURL(url), 60000);
     }
 
-    async function writeHandle(entry, data) {
-        await ensurePermission(entry, 'readwrite');
-        const w = await entry.handle.createWritable();
+    async function writeFile(handle, data) {
+        const w = await handle.createWritable();
         try {
             await w.write(data);
             await w.close();
         } catch (e) {
             await w.abort().catch(() => { });
-            throw new Error(`「${entry.name}」に保存できませんでした。Excel などで開いていたら閉じてから、もう一度保存してください。（${e.message}）`);
+            throw new Error(`「${handle.name}」に保存できませんでした。Excel などで開いていたら閉じてから、もう一度「保存」を押してください。（${e.message}）`);
         }
     }
 
-    function downloadCsvs(includeHistory) {
-        if (includeHistory && result.historyCsv) download('納期回答履歴.csv', result.historyCsv, 'text/csv');
-        if (result.changeCsv) download(result.changeName, result.changeCsv, 'text/csv');
+    // ---- 保存先のフォルダ（注残リストのあるフォルダ）----
+    // ファイル1つの参照からはフォルダが分からないので、フォルダの参照をもらって覚えておく
+
+    async function loadFolder() {
+        try {
+            const db = await openDb();
+            return await new Promise((resolve, reject) => {
+                const req = db.transaction('kv').objectStore('kv').get('folder');
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => reject(req.error);
+            });
+        } catch (e) { return null; }
+    }
+
+    async function saveFolder(dir) {
+        try {
+            const db = await openDb();
+            db.transaction('kv', 'readwrite').objectStore('kv').put(dir, 'folder');
+        } catch (e) { /* 覚えられなければ次も選んでもらう */ }
+    }
+
+    // そのフォルダに、選んだ注残リストそのものがあればその参照を返す（無ければ null）
+    async function findZanzanIn(dir) {
+        let h;
+        try { h = await dir.getFileHandle(state.zanzan.name); } catch (e) { return null; }
+        if (state.zanzan.handle) return await state.zanzan.handle.isSameEntry(h) ? h : null;
+        // 昔ながらの選び方のときは、名前・大きさ・更新日時が同じなら同じファイルとみなす
+        const f = await h.getFile();
+        const sel = state.zanzan.file;
+        return f.size === sel.size && f.lastModified === sel.lastModified ? h : null;
+    }
+
+    async function hasPermission(dir) {
+        const opts = { mode: 'readwrite' };
+        if (await dir.queryPermission(opts) === 'granted') return true;
+        return await dir.requestPermission(opts) === 'granted';
+    }
+
+    // 前回のフォルダに注残リストがあればそれを使い、無ければフォルダを選んでもらう
+    async function getFolder() {
+        const saved = await loadFolder();
+        if (saved && await hasPermission(saved).catch(() => false)) {
+            const h = await findZanzanIn(saved).catch(() => null);
+            if (h) return { dir: saved, zanzan: h };
+        }
+        const opts = { id: 'seiban-tenki-folder', mode: 'readwrite' };
+        if (state.zanzan.handle) opts.startIn = state.zanzan.handle;
+        let dir;
+        try {
+            dir = await window.showDirectoryPicker(opts);
+        } catch (e) {
+            if (e.name === 'AbortError') return null;
+            throw e;
+        }
+        const h = await findZanzanIn(dir);
+        if (!h) throw new Error(`選んだフォルダに、選んだ注残リスト「${state.zanzan.name}」がありません。注残リストのあるフォルダを選んでください。`);
+        await saveFolder(dir);
+        return { dir, zanzan: h };
+    }
+
+    // 納期回答履歴の保存先。選んだ履歴があればそれに上書きし、無ければ注残リストのフォルダに作る
+    async function historyTarget(dir) {
+        if (state.history && state.history.handle) {
+            await ensurePermission(state.history, 'readwrite');
+            return { handle: state.history.handle };
+        }
+        if (state.history) return { handle: await dir.getFileHandle(state.history.name, { create: true }) };
+        const name = '納期回答履歴.csv';
+        let exists = true;
+        try { await dir.getFileHandle(name); } catch (e) { exists = false; }
+        if (!exists) return { handle: await dir.getFileHandle(name, { create: true }) };
+        // 今回読まなかった履歴を上書きすると過去の分が消えるので、別の名前で残す
+        const other = name.replace(/\.csv$/, `_${result.changeName.match(/_(\d+_\d+)\.csv$/)[1]}.csv`);
+        return {
+            handle: await dir.getFileHandle(other, { create: true }),
+            warn: `※フォルダに ${name} がありますが、今回は「納期回答履歴.csv」欄で選ばれていなかったので上書きせず、${other} として保存しました。次回は ${name} を選んでから実行してください。`
+        };
     }
 
     $('saveOver').addEventListener('click', async () => {
+        const btn = $('saveOver');
+        btn.disabled = true;
         try {
-            // 上書きの許可を先にもらってから、元のファイルを控えておく
-            await ensurePermission(state.zanzan, 'readwrite');
-            const historyOver = result.historyCsv && state.history && state.history.handle;
-            if (historyOver) await ensurePermission(state.history, 'readwrite');
-            download(result.backupName, result.original, XLSX_MIME);
-            await writeHandle(state.zanzan, result.zanzan);
-            log(`保存しました: ${state.zanzan.name}（元のファイルは ${result.backupName} としてダウンロード）`);
+            const folder = await getFolder();
+            if (!folder) { log('※保存先のフォルダが選ばれなかったので、保存していません。'); btn.disabled = false; return; }
+            const { dir, zanzan } = folder;
+            const history = result.historyCsv ? await historyTarget(dir) : null;
+
+            // 書き換える前の注残リストを控えてから上書きする
+            const backupDir = await dir.getDirectoryHandle(BACKUP_DIR, { create: true });
+            await writeFile(await backupDir.getFileHandle(result.backupName, { create: true }), result.original);
+            await writeFile(zanzan, result.zanzan);
+            log(`保存しました: ${dir.name}\\${state.zanzan.name}（元のファイルは ${BACKUP_DIR}\\${result.backupName}）`);
+
             // 注残リストを保存できてから、履歴と変更一覧を書き出す
-            if (historyOver) {
-                await writeHandle(state.history, result.historyCsv);
-                log(`納期回答履歴を更新しました: ${state.history.name}`);
+            if (history) {
+                await writeFile(history.handle, result.historyCsv);
+                log(`納期回答履歴を保存しました: ${history.handle.name}`);
+                if (history.warn) log(history.warn);
             }
-            downloadCsvs(!historyOver);
-            $('saveOver').disabled = true;
+            if (result.changeCsv) {
+                await writeFile(await dir.getFileHandle(result.changeName, { create: true }), result.changeCsv);
+                log(`納期回答の変更一覧を保存しました: ${result.changeName}`);
+            }
+            log('');
+            log('保存が終わりました。');
         } catch (e) {
+            btn.disabled = false;
             log(`エラー: ${e.message}`);
             alert(e.message);
         }
@@ -324,11 +413,12 @@
 
     $('saveDownload').addEventListener('click', () => {
         download(state.zanzan.name, result.zanzan, XLSX_MIME);
-        downloadCsvs(true);
-        log(`ダウンロードしました: ${state.zanzan.name}`);
+        if (result.historyCsv) download('納期回答履歴.csv', result.historyCsv, 'text/csv');
+        if (result.changeCsv) download(result.changeName, result.changeCsv, 'text/csv');
+        log(`ダウンロードフォルダに保存しました: ${state.zanzan.name}（注残リストと同じフォルダへ移してください）`);
     });
 
-    $('support').hidden = canPick;
+    $('support').hidden = canSaveFolder;
     render();
     loadState();
 })();
