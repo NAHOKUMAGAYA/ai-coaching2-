@@ -336,12 +336,51 @@
         return await dir.requestPermission(opts) === 'granted';
     }
 
-    // 前回のフォルダに注残リストがあればそれを使い、無ければフォルダを選んでもらう
+    // Edge で選ぶ画面がキャンセル扱いになるときのために、エクスプローラーからドラッグされたフォルダを受け取っておく
+    let droppedDir = null;
+
+    function showFolderDrop(reason) {
+        $('folderDrop').hidden = false;
+        log(reason + 'エクスプローラーで注残リストのあるフォルダを、下の点線の枠へドラッグしてから、もう一度「保存」を押してください。');
+    }
+
+    const drop = $('folderDrop');
+    drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
+    drop.addEventListener('drop', async e => {
+        e.preventDefault();
+        drop.classList.remove('drag');
+        // ハンドルはイベントの中で同期的に取り出しておく必要がある
+        const item = [...e.dataTransfer.items].find(i => i.kind === 'file');
+        const pending = item && item.getAsFileSystemHandle ? item.getAsFileSystemHandle() : null;
+        const h = pending ? await pending : null;
+        if (!h || h.kind !== 'directory') {
+            log('※フォルダではなかったので受け取れませんでした。ファイルではなく、注残リストが入っているフォルダそのものをドラッグしてください。');
+            return;
+        }
+        droppedDir = h;
+        $('folderDropName').textContent = h.name;
+        log(`保存先のフォルダ「${h.name}」を受け取りました。「保存」を押してください。`);
+    });
+
+    // ドラッグされたフォルダ → 前回のフォルダ → 選ぶ画面 の順に、注残リストのあるフォルダを探す
     async function getFolder() {
+        if (droppedDir) {
+            if (!await hasPermission(droppedDir)) throw new Error(`フォルダ「${droppedDir.name}」に保存する許可がもらえませんでした。もう一度「保存」を押して、許可してください。`);
+            const h = await findZanzanIn(droppedDir);
+            if (!h) throw new Error(`ドラッグしたフォルダ「${droppedDir.name}」に、選んだ注残リスト「${state.zanzan.name}」がありません。注残リストのあるフォルダをドラッグし直してください。`);
+            await saveFolder(droppedDir);
+            return { dir: droppedDir, zanzan: h };
+        }
         const saved = await loadFolder();
         if (saved && await hasPermission(saved).catch(() => false)) {
             const h = await findZanzanIn(saved).catch(() => null);
             if (h) return { dir: saved, zanzan: h };
+        }
+        // 選ぶ画面がキャンセル扱いになるブラウザでは、最初からドラッグしてもらう
+        if (useInputPicker()) {
+            showFolderDrop('');
+            return null;
         }
         const opts = { id: 'seiban-tenki-folder', mode: 'readwrite' };
         if (state.zanzan.handle) opts.startIn = state.zanzan.handle;
@@ -349,7 +388,11 @@
         try {
             dir = await window.showDirectoryPicker(opts);
         } catch (e) {
-            if (e.name === 'AbortError') return null;
+            if (e.name === 'AbortError') {
+                try { localStorage.setItem(PICK_KEY, 'input'); } catch (err) { /* 覚えられなくても次の操作はできる */ }
+                showFolderDrop(`※フォルダが選ばれませんでした（${e.message}）。`);
+                return null;
+            }
             throw e;
         }
         const h = await findZanzanIn(dir);
@@ -382,7 +425,7 @@
         btn.disabled = true;
         try {
             const folder = await getFolder();
-            if (!folder) { log('※保存先のフォルダが選ばれなかったので、保存していません。'); btn.disabled = false; return; }
+            if (!folder) { btn.disabled = false; return; }
             const { dir, zanzan } = folder;
             const history = result.historyCsv ? await historyTarget(dir) : null;
 
