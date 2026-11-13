@@ -92,7 +92,7 @@
       <li>追記する列：確認日（処理した日）／FD製番／部品納期／回答納期／回答備考。2回目以降は前回の「回答備考」の後ろに同じ5列を追加します。</li>
       <li>回答納期：同じ製番の部品の中で一番遅い回答納期。1件でも未回答（空欄・日付以外）があれば空欄。</li>
       <li>部品納期：同じ製番の部品の中で一番遅い納期。回答備考：その製番の備考を重複なしで「／」区切り。</li>
-      <li>「納期回答対象外」シートの品番に該当する行は、FD製番を「対象外」にします。</li>
+      <li>FD製番を「対象外」にする行：ユーザ欄1が「J」以外（空欄も）／納入指示区分が「JIT」（手配JITは除く）／「納期回答対象外」シートの品番、のどれかに当てはまる行。ただし品番 EK0393 は対象外にしません。</li>
     </ul>
     <div class="legend" style="margin-top:8px">2回目以降の色付け（FD製番・部品納期・回答納期・回答備考）：
       <span><span class="chip same">変更なし</span> 塗りつぶしなし・黒文字</span>
@@ -117,10 +117,12 @@
 'use strict';
 // ===================== 設定 =====================
 const BLOCK = ['確認日', 'FD製番', '部品納期', '回答納期', '回答備考'];
+const ALL = '*ALL*'; // 製番台帳の「全シートまとめて」
 const BLANK_SHEET = '回答納期空欄';
 const DETAIL_SHEET = '未回答明細';
 const COLOR_CHG = 'FF00B0F0';  // 水色
 const COLOR_NEW = 'FFFF0000';  // 赤
+const KEEP_PARTS = ['EK0393'];  // 対象外の条件に当てはまっても対象外にしない品番
 
 const KW_SHIJI = ['納入指示番号', '納入指示NO', '指示番号', '指示NO', '納入指示'];
 const KW_SEIBAN = ['FD製番', '手配製番', '製番', '製造番号'];
@@ -130,11 +132,14 @@ const DEFS = {
       { key: 'shiji', label: '納入指示番号', kw: KW_SHIJI, req: true },
       { key: 'date', label: '納入指示日', kw: ['納入指示日', '指示日', '納入日'], req: true },
       { key: 'hinban', label: '品番', kw: ['品番', '品目コード', '品目', '部品番号', '図番'], req: false, note: '④対象外の判定に使用' },
+      { key: 'user1', label: 'ユーザ欄1', kw: ['ユーザ欄1', 'ユーザー欄1'], req: false, note: 'J以外（空欄も）は対象外' },
+      { key: 'kubun', label: '納入指示区分', kw: ['納入指示区分'], req: false, note: 'JITは対象外（手配JITは除く）' },
     ] },
   daicho: { title: '製番台帳', desc: '納入指示番号と手配製番の紐づけ。複数ファイルはまとめて使います（ファイルごとにシート・列を設定）。', required: true, multi: true,
+    skipSheets: ['記入方法', 'リスト', '休日'],
     fields: [
-      { key: 'shiji', label: '納入指示番号', kw: KW_SHIJI, req: true },
-      { key: 'seiban', label: '製番', kw: KW_SEIBAN, req: true },
+      { key: 'shiji', label: '納入指示番号', kw: ['客先O/N', ...KW_SHIJI, 'O/N'], req: true, note: '台帳では「客先O/N」の列' },
+      { key: 'seiban', label: '製番', kw: ['製番', ...KW_SEIBAN], req: true },
     ] },
   hatchu: { title: '発注仕入状況一覧表', desc: '部品ごとの納期・回答納期・回答備考。', required: true,
     fields: [
@@ -309,6 +314,7 @@ async function loadBuffer(kind, name, buf) {
   let sheet = e.wbS.SheetNames[0];
   if (def.defaultSheet) { const hit = e.wbS.SheetNames.find(n => nk(n) === nk(def.defaultSheet)) || e.wbS.SheetNames.find(n => nk(n).includes(nk(def.defaultSheet))); if (hit) sheet = hit; }
   if (kind === 'zanzan') { const hit = e.wbS.SheetNames.find(n => n !== BLANK_SHEET && n !== DETAIL_SHEET); if (hit) sheet = hit; }
+  if (def.multi && e.wbS.SheetNames.length > 1) sheet = ALL; // 製番台帳は全シートを読む
   e.el.querySelector('.sh').value = sheet;
   selectSheet(e, sheet);
   updateDrop(kind);
@@ -331,7 +337,7 @@ function createEntryEl(e) {
   el.innerHTML = `
     <div class="row entry-head"><b>📄 ${escapeHtml(e.name)}</b><button class="x" type="button">外す</button></div>
     <div class="row">
-      <label>シート <select class="sh">${e.wbS.SheetNames.map(n => `<option>${escapeHtml(n)}</option>`).join('')}</select></label>
+      <label>シート <select class="sh">${DEFS[e.kind].multi && e.wbS.SheetNames.length > 1 ? `<option value="${ALL}">（全シートまとめて）</option>` : ''}${e.wbS.SheetNames.map(n => `<option>${escapeHtml(n)}</option>`).join('')}</select></label>
       <label>見出し行 <input type="number" min="1" class="hd"></label>
     </div>
     <div class="map"></div>
@@ -342,7 +348,40 @@ function createEntryEl(e) {
   return el;
 }
 
+// 全シートモード：見出し（必須の列）が見つかったシートだけを使う
+function sheetParts(e) {
+  return e.sheet === ALL ? e.parts : [{ sheet: e.sheet, grid: e.grid, hdr: e.hdr, cols: e.cols }];
+}
+function selectAllSheets(e) {
+  const def = DEFS[e.kind], skip = (def.skipSheets || []).map(nk);
+  e.sheet = ALL; e.grid = []; e.hdr = 0; e.cols = {};
+  e.parts = []; e.skipped = [];
+  for (const name of e.wbS.SheetNames) {
+    if (skip.includes(nk(name))) continue;
+    const grid = sheetToGrid(e.wbS.Sheets[name]);
+    const hdr = guessHeader(grid, def.fields), cols = guessCols(grid, hdr, def.fields);
+    if (def.fields.every(f => !f.req || cols[f.key] !== undefined)) e.parts.push({ sheet: name, grid, hdr, cols });
+    else e.skipped.push(name);
+  }
+  const hd = e.el.querySelector('.hd'); hd.value = ''; hd.disabled = true;
+  let html = '<table><tr><th>シート</th><th>見出し行</th>' + def.fields.map(f => `<th>${f.label}</th>`).join('') + '<th>データ行</th></tr>';
+  for (const p of e.parts) {
+    const H = p.grid[p.hdr] || [];
+    html += `<tr><td>${escapeHtml(p.sheet)}</td><td>${p.hdr + 1}行目</td>` +
+      def.fields.map(f => `<td>${p.cols[f.key] !== undefined ? `${colName(p.cols[f.key])}列: ${escapeHtml(txt(H[p.cols[f.key]]))}` : '-'}</td>`).join('') +
+      `<td>${p.grid.slice(p.hdr + 1).filter(r => txt(r[p.cols.seiban])).length}</td></tr>`;
+  }
+  html += '</table>';
+  e.el.querySelector('.map').innerHTML = `<span></span><span class="note">${e.parts.length
+    ? `${e.parts.length}シートを使います。${e.skipped.length ? `列が見つからず使わないシート：${e.skipped.map(escapeHtml).join('、')}` : ''}<br>列が違うときは、シートを1つ選ぶと手で指定できます。`
+    : '<b style="color:var(--ng)">「製番」と「客先O/N（納入指示番号）」の列があるシートが見つかりません。シートを1つ選んで列を指定してください。</b>'}</span>`;
+  e.el.querySelector('.preview').innerHTML = e.parts.length ? html : '';
+  updateRunState();
+}
+
 function selectSheet(e, sheet) {
+  if (sheet === ALL) return selectAllSheets(e);
+  e.el.querySelector('.hd').disabled = false;
   e.sheet = sheet;
   e.grid = sheetToGrid(e.wbS.Sheets[sheet]);
   e.hdr = guessHeader(e.grid, DEFS[e.kind].fields);
@@ -405,8 +444,11 @@ function missingItems() {
   for (const [kind, def] of Object.entries(DEFS)) {
     const list = entriesOf(kind);
     if (!list.length) { if (def.required) miss.push(`${def.title}のファイル`); continue; }
-    for (const e of list) for (const f of def.fields)
-      if (f.req && e.cols[f.key] === undefined) miss.push(`${def.title}${def.multi ? `（${e.name}）` : ''}の「${f.label}」列`);
+    for (const e of list) {
+      if (e.sheet === ALL) { if (!e.parts.length) miss.push(`${def.title}（${e.name}）の列があるシート`); continue; }
+      for (const f of def.fields)
+        if (f.req && e.cols[f.key] === undefined) miss.push(`${def.title}${def.multi ? `（${e.name}）` : ''}の「${f.label}」列`);
+    }
   }
   return miss;
 }
@@ -426,11 +468,16 @@ function compute(opts) {
 
   // ① 製番台帳（複数ファイルをまとめる）：納入指示番号 → 製番（複数可）
   const ledger = new Map();
-  for (const d of entriesOf('daicho')) for (const r of d.grid.slice(d.hdr + 1)) {
-    const k = nk(r[d.cols.shiji]), sb = txt(r[d.cols.seiban]);
-    if (!k || !sb) continue;
-    if (!ledger.has(k)) ledger.set(k, []);
-    if (!ledger.get(k).includes(sb)) ledger.get(k).push(sb);
+  for (const e of entriesOf('daicho')) for (const d of sheetParts(e)) for (const r of d.grid.slice(d.hdr + 1)) {
+    const sb = txt(r[d.cols.seiban]);
+    if (!sb) continue;
+    // 1つのセルに「、」「,」や空白区切りで複数の納入指示番号が入っていることがある
+    for (const part of String(r[d.cols.shiji] ?? '').normalize('NFKC').split(/[,、，;；\s]+/)) {
+      const k = nk(part);
+      if (!k) continue;
+      if (!ledger.has(k)) ledger.set(k, []);
+      if (!ledger.get(k).includes(sb)) ledger.get(k).push(sb);
+    }
   }
   // ② 発注仕入状況：製番 → 部品行
   const orders = new Map();
@@ -455,7 +502,8 @@ function compute(opts) {
 
   const from = opts.from || '0000-00-00', to = opts.to || '9999-99-99';
   const rows = [];
-  const stats = { target: 0, linked: 0, answered: 0, blank: 0, excluded: 0, nolink: 0, changed: 0, added: 0 };
+  const stats = { target: 0, linked: 0, answered: 0, blank: 0, excluded: 0, exUser: 0, exJit: 0, exItem: 0, nolink: 0, changed: 0, added: 0 };
+  const keep = new Set(KEEP_PARTS.map(nk));
   const detailRows = new Map();
   for (let r = z.hdr + 1; r < z.grid.length; r++) {
     const row = z.grid[r];
@@ -466,7 +514,15 @@ function compute(opts) {
     stats.target++;
     const res = { r, shiji, date: dk, hinban: z.cols.hinban !== undefined ? txt(row[z.cols.hinban]) : '',
       kakunin: today, fd: '', buhin: null, kaito: null, biko: '', reason: '' };
-    if (z.cols.hinban !== undefined && excluded.has(nk(row[z.cols.hinban]))) {
+    // ④ 対象外：ユーザ欄1がJ以外／納入指示区分がJIT／対象外品番 のどれか（KEEP_PARTS の品番は除く）
+    const part = z.cols.hinban !== undefined ? nk(row[z.cols.hinban]) : '';
+    let exHit = false;
+    if (!(part && keep.has(part))) {
+      if (z.cols.user1 !== undefined && nk(row[z.cols.user1]) !== 'J') { stats.exUser++; exHit = true; }
+      if (z.cols.kubun !== undefined && nk(row[z.cols.kubun]).replace(/^\d+:/, '') === 'JIT') { stats.exJit++; exHit = true; }
+      if (part && excluded.has(part)) { stats.exItem++; exHit = true; }
+    }
+    if (exHit) {
       res.fd = '対象外'; stats.excluded++;
     } else {
       const seibans = ledger.get(nk(shiji)) || [];
@@ -689,10 +745,11 @@ function showResult({ res, name }) {
   const s = res.stats;
   const items = [
     ['対象行（日付範囲内）', s.target], ['製番 紐づけ済', s.linked], ['回答納期あり', s.answered],
-    ['回答納期 空欄', s.blank], ['対象外', s.excluded], ['製番台帳に未登録', s.nolink],
+    ['回答納期 空欄', s.blank], ['製番台帳に未登録', s.nolink],
+    ['対象外', s.excluded, `ユーザ欄1がJ以外 ${s.exUser}／JIT ${s.exJit}／対象外品番 ${s.exItem}（重複あり）`],
   ];
   if (res.prev !== null) items.push(['前回から変更（セル数）', s.changed], ['新規記入（セル数）', s.added]);
-  document.getElementById('stats').innerHTML = items.map(([l, n]) => `<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+  document.getElementById('stats').innerHTML = items.map(([l, n, sub]) => `<div class="stat"><div class="n">${n}</div><div class="l">${l}</div>${sub ? `<div class="l">${sub}</div>` : ''}</div>`).join('');
   document.getElementById('dlName').textContent = `ファイル名：${name}`;
   const blank = res.rows.filter(r => !r.kaito && r.fd !== '対象外');
   let html = '<table><tr><th>理由</th><th>納入指示番号</th><th>納入指示日</th><th>品番</th><th>FD製番</th><th>部品納期</th><th>回答備考</th></tr>';
