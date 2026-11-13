@@ -1,0 +1,675 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>製番転記アプリ</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --ink: #1f2933; --muted: #6b7684; --line: #dde1e6;
+    --accent: #1f6feb; --accent-ink: #fff; --ok: #1a7f37; --warn: #b54708; --ng: #c62828;
+    --blue: #00b0f0; --red: #ff0000;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "Yu Gothic UI", "Meiryo", system-ui, sans-serif; font-size: 14px; line-height: 1.6; }
+  header { background: #1f2933; color: #fff; padding: 14px 24px; }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 2px 0 0; color: #c5ccd3; font-size: 13px; }
+  main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 60px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 10px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+  .step { display: inline-flex; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff;
+    align-items: center; justify-content: center; font-size: 13px; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)); gap: 14px; }
+  @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } }
+  .file { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .file h3 { margin: 0 0 4px; font-size: 15px; }
+  .file .desc { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .drop { border: 2px dashed var(--line); border-radius: 6px; padding: 12px; text-align: center; color: var(--muted); cursor: pointer; }
+  .drop.over { border-color: var(--accent); background: #eef4ff; }
+  .drop.loaded { border-style: solid; border-color: var(--ok); color: var(--ok); background: #f0faf3; }
+  .opts { display: none; margin-top: 10px; }
+  .opts.show { display: block; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 6px; }
+  .row label { display: inline-flex; align-items: center; gap: 6px; }
+  select, input[type=number], input[type=date] { font: inherit; padding: 3px 6px; border: 1px solid #b8c0c8; border-radius: 4px; background: #fff; }
+  input[type=number] { width: 70px; }
+  .map { display: grid; grid-template-columns: 130px 1fr; gap: 4px 8px; align-items: center; margin-top: 4px; }
+  .map .req::after { content: " *"; color: var(--ng); }
+  .preview { overflow: auto; max-height: 170px; border: 1px solid var(--line); margin-top: 8px; }
+  table { border-collapse: collapse; font-size: 12px; }
+  th, td { border: 1px solid var(--line); padding: 2px 6px; white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+  th { background: #eef1f4; position: sticky; top: 0; }
+  td.hl, th.hl { background: #fff4c2; }
+  .btn { font: inherit; border: 0; border-radius: 6px; padding: 9px 22px; background: var(--accent); color: var(--accent-ink); cursor: pointer; font-weight: bold; }
+  .btn:disabled { background: #a7b4c2; cursor: not-allowed; }
+  .btn.sub { background: #fff; color: var(--accent); border: 1px solid var(--accent); }
+  .msg { margin-top: 10px; white-space: pre-wrap; }
+  .msg.err { color: var(--ng); }
+  .msg.warn { color: var(--warn); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 8px 0 12px; }
+  .stat { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+  .stat .n { font-size: 22px; font-weight: bold; }
+  .stat .l { color: var(--muted); font-size: 12px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted); }
+  .chip { display: inline-block; padding: 0 8px; border-radius: 3px; font-weight: bold; }
+  .chip.chg { background: var(--blue); color: #fff; } .chip.new { background: var(--red); color: #fff; }
+  .chip.same { border: 1px solid var(--line); color: #000; font-weight: normal; }
+  .note { color: var(--muted); font-size: 12px; }
+  ul.rules { margin: 4px 0 0; padding-left: 20px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>製番転記アプリ</h1>
+  <p>客先注残リストに FD製番・部品納期・回答納期・回答備考を転記します（ファイルはこのPCのブラウザ内だけで処理されます）</p>
+</header>
+<main>
+  <section class="card">
+    <h2><span class="step">1</span>ファイルを選ぶ</h2>
+    <div class="note">枠にドラッグ＆ドロップ、またはクリックして選択。読み込み後、シート・見出し行・列の割り当てを確認してください（自動で推定します）。<br>
+      2回目以降は、前回このアプリが出力したファイルを「客先注残リスト」に入れてください。</div>
+    <div class="grid2" id="files" style="margin-top:12px"></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="step">2</span>条件を決める</h2>
+    <div class="row">
+      <label>納入指示日 <input type="date" id="dFrom"></label> 〜 <input type="date" id="dTo">
+      <span class="note" id="dRange"></span>
+    </div>
+    <div class="row">
+      <span>追記位置（1回目）:</span>
+      <label><input type="radio" name="pos" value="after" checked> 納入指示番号の列の直後に挿入</label>
+      <label><input type="radio" name="pos" value="end"> 表の一番右の後ろ</label>
+    </div>
+    <ul class="rules">
+      <li>追記する列：確認日（処理した日）／FD製番／部品納期／回答納期／回答備考。2回目以降は前回の「回答備考」の後ろに同じ5列を追加します。</li>
+      <li>回答納期：同じ製番の部品の中で一番遅い回答納期。1件でも未回答（空欄・日付以外）があれば空欄。</li>
+      <li>部品納期：同じ製番の部品の中で一番遅い納期。回答備考：その製番の備考を重複なしで「／」区切り。</li>
+      <li>「納期回答対象外」シートの品番に該当する行は、FD製番を「対象外」にします。</li>
+    </ul>
+    <div class="legend" style="margin-top:8px">2回目以降の色付け（FD製番・部品納期・回答納期・回答備考）：
+      <span><span class="chip same">変更なし</span> 塗りつぶしなし・黒文字</span>
+      <span><span class="chip chg">変更あり</span> 水色・白太字</span>
+      <span><span class="chip new">新規記入</span> 赤・白太字</span>
+    </div>
+    <div style="margin-top:14px"><button class="btn" id="run" disabled>転記を実行</button></div>
+    <div class="msg" id="runMsg"></div>
+  </section>
+
+  <section class="card" id="resultCard" style="display:none">
+    <h2><span class="step">3</span>結果</h2>
+    <div class="stats" id="stats"></div>
+    <button class="btn" id="dl">結果のExcelをダウンロード</button>
+    <div class="note" id="dlName" style="margin-top:4px"></div>
+    <h3 style="font-size:14px;margin:16px 0 4px">回答納期が空欄の行（「回答納期空欄」シートに出力）</h3>
+    <div class="preview" style="max-height:320px" id="blankPreview"></div>
+  </section>
+</main>
+
+<script>
+'use strict';
+// ===================== 設定 =====================
+const BLOCK = ['確認日', 'FD製番', '部品納期', '回答納期', '回答備考'];
+const BLANK_SHEET = '回答納期空欄';
+const DETAIL_SHEET = '未回答明細';
+const COLOR_CHG = 'FF00B0F0';  // 水色
+const COLOR_NEW = 'FFFF0000';  // 赤
+
+const KW_SHIJI = ['納入指示番号', '納入指示NO', '指示番号', '指示NO', '納入指示'];
+const KW_SEIBAN = ['FD製番', '手配製番', '製番', '製造番号'];
+const DEFS = {
+  zanzan: { title: '客先注残リスト', desc: '転記先。2回目以降は前回出力したファイル。', required: true, keepBook: true,
+    fields: [
+      { key: 'shiji', label: '納入指示番号', kw: KW_SHIJI, req: true },
+      { key: 'date', label: '納入指示日', kw: ['納入指示日', '指示日', '納入日'], req: true },
+      { key: 'hinban', label: '品番', kw: ['品番', '品目コード', '品目', '部品番号', '図番'], req: false, note: '④対象外の判定に使用' },
+    ] },
+  daicho: { title: '製番台帳', desc: '納入指示番号と手配製番の紐づけ。', required: true,
+    fields: [
+      { key: 'shiji', label: '納入指示番号', kw: KW_SHIJI, req: true },
+      { key: 'seiban', label: '製番', kw: KW_SEIBAN, req: true },
+    ] },
+  hatchu: { title: '発注仕入状況一覧表', desc: '部品ごとの納期・回答納期・回答備考。', required: true,
+    fields: [
+      { key: 'seiban', label: '製番', kw: KW_SEIBAN, req: true },
+      { key: 'kaito', label: '回答納期', kw: ['回答納期', '納期回答', '回答日'], req: true },
+      { key: 'biko', label: '回答備考', kw: ['回答備考', '備考'], req: false },
+      { key: 'buhin', label: '部品納期', kw: ['部品納期', '希望納期', '指定納期', '納期'], req: true },
+    ] },
+  taisho: { title: '指示区分変更依頼追記分（対象外品番）', desc: '「納期回答対象外」シートの品番を対象外にします。無い場合は省略可。', required: false,
+    defaultSheet: '納期回答対象外',
+    fields: [ { key: 'hinban', label: '品番', kw: ['品番', '品目コード', '品目', '部品番号', '図番'], req: true } ] },
+};
+const state = {}; // kind -> {name, buf, wbS, sheet, hdr, cols:{}}
+let lastResult = null;
+
+// ===================== ユーティリティ =====================
+const nk = v => String(v ?? '').normalize('NFKC').replace(/\s+/g, '').toUpperCase();
+const txt = v => String(v ?? '').trim();
+const pad = n => String(n).padStart(2, '0');
+const colName = c => XLSX.utils.encode_col(c);
+
+// 値 → 'YYYY-MM-DD'（日付でなければ null）
+function toKey(v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (v instanceof Date) return isNaN(v) ? null : `${v.getUTCFullYear()}-${pad(v.getUTCMonth() + 1)}-${pad(v.getUTCDate())}`;
+  if (typeof v === 'number') {
+    if (v >= 19000101 && v <= 21001231 && Number.isInteger(v)) return ymd(Math.floor(v / 10000), Math.floor(v / 100) % 100, v % 100);
+    if (v > 1 && v < 100000) { const d = new Date(Date.UTC(1899, 11, 30) + Math.floor(v) * 86400000); return toKey(d); }
+    return null;
+  }
+  const s = String(v).normalize('NFKC').trim();
+  let m = s.match(/^(\d{4})[\/\-.年](\d{1,2})[\/\-.月](\d{1,2})/);
+  if (m) return ymd(+m[1], +m[2], +m[3]);
+  m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m) return ymd(+m[1], +m[2], +m[3]);
+  return null;
+}
+function ymd(y, m, d) {
+  if (y < 1900 || m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCMonth() !== m - 1) return null;
+  return `${y}-${pad(m)}-${pad(d)}`;
+}
+const keyToDate = k => { const [y, m, d] = k.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)); };
+const keyToDisp = k => k ? k.replace(/-/g, '/') : '';
+function todayKey() { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+
+// SheetJS シート → A1 起点の2次元配列
+function sheetToGrid(ws) {
+  if (!ws || !ws['!ref']) return [];
+  const r = XLSX.utils.decode_range(ws['!ref']);
+  const grid = [];
+  for (let R = 0; R <= r.e.r; R++) {
+    const row = [];
+    for (let C = 0; C <= r.e.c; C++) {
+      const c = ws[XLSX.utils.encode_cell({ r: R, c: C })];
+      row.push(c && c.v !== undefined ? c.v : '');
+    }
+    grid.push(row);
+  }
+  return grid;
+}
+
+async function decodeAndRead(name, buf) {
+  if (/\.(csv|txt)$/i.test(name)) {
+    let s;
+    try { s = new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+    catch { s = new TextDecoder('shift_jis').decode(buf); }
+    return XLSX.read(s.replace(/^﻿/, ''), { type: 'string', raw: true });
+  }
+  return XLSX.read(buf, { type: 'array' });
+}
+
+function guessHeader(grid, fields) {
+  const kws = fields.flatMap(f => f.kw.map(nk));
+  let best = 0, bestScore = -1;
+  for (let r = 0; r < Math.min(grid.length, 30); r++) {
+    let score = 0;
+    for (const v of grid[r] || []) { const k = nk(v); if (k && kws.some(w => k === w || k.includes(w))) score++; }
+    if (score > bestScore) { best = r; bestScore = score; }
+  }
+  return best;
+}
+function guessCols(grid, hdr, fields) {
+  const H = (grid[hdr] || []).map(nk);
+  const used = new Set(), cols = {};
+  for (const pass of ['exact', 'part']) {
+    for (const f of fields) {
+      if (cols[f.key] !== undefined) continue;
+      for (const w of f.kw.map(nk)) {
+        const c = H.findIndex((h, i) => h && !used.has(i) && (pass === 'exact' ? h === w : h.includes(w)));
+        if (c >= 0) { cols[f.key] = c; used.add(c); break; }
+      }
+    }
+  }
+  return cols;
+}
+
+// ===================== ファイル読み込み・UI =====================
+function buildFileCards() {
+  const host = document.getElementById('files');
+  for (const [kind, def] of Object.entries(DEFS)) {
+    const el = document.createElement('div');
+    el.className = 'file';
+    el.innerHTML = `
+      <h3>${def.title}${def.required ? '' : ' <span class="note">（任意）</span>'}</h3>
+      <div class="desc">${def.desc}</div>
+      <div class="drop" id="drop-${kind}">ここにファイルをドロップ／クリックして選択<br><span class="note">.xlsx / .xlsm / .xls / .csv</span></div>
+      <input type="file" id="in-${kind}" accept=".xlsx,.xlsm,.xls,.csv" hidden>
+      <div class="opts" id="opts-${kind}">
+        <div class="row">
+          <label>シート <select id="sh-${kind}"></select></label>
+          <label>見出し行 <input type="number" min="1" id="hd-${kind}"></label>
+        </div>
+        <div class="map" id="map-${kind}"></div>
+        <div class="preview" id="pv-${kind}"></div>
+      </div>`;
+    host.appendChild(el);
+    const drop = el.querySelector('.drop'), inp = el.querySelector('input[type=file]');
+    drop.onclick = () => inp.click();
+    drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+    drop.ondragleave = () => drop.classList.remove('over');
+    drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) handleFile(kind, e.dataTransfer.files[0]); };
+    inp.onchange = () => { if (inp.files[0]) handleFile(kind, inp.files[0]); inp.value = ''; };
+    el.querySelector(`#sh-${kind}`).onchange = e => selectSheet(kind, e.target.value);
+    el.querySelector(`#hd-${kind}`).onchange = e => { const s = state[kind]; s.hdr = Math.max(0, (+e.target.value || 1) - 1); s.cols = guessCols(s.grid, s.hdr, DEFS[kind].fields); renderMap(kind); };
+  }
+}
+
+async function handleFile(kind, file) {
+  const buf = await file.arrayBuffer();
+  await loadBuffer(kind, file.name, buf);
+}
+
+async function loadBuffer(kind, name, buf) {
+  const drop = document.getElementById(`drop-${kind}`);
+  try {
+    const wbS = await decodeAndRead(name, buf);
+    state[kind] = { name, buf, wbS };
+    drop.classList.add('loaded');
+    drop.innerHTML = `✔ ${escapeHtml(name)}<br><span class="note">クリックで差し替え</span>`;
+    const sel = document.getElementById(`sh-${kind}`);
+    sel.innerHTML = wbS.SheetNames.map(n => `<option>${escapeHtml(n)}</option>`).join('');
+    const def = DEFS[kind];
+    let sheet = wbS.SheetNames[0];
+    if (def.defaultSheet) { const hit = wbS.SheetNames.find(n => nk(n) === nk(def.defaultSheet)) || wbS.SheetNames.find(n => nk(n).includes(nk(def.defaultSheet))); if (hit) sheet = hit; }
+    if (kind === 'zanzan') { // 転記用の出力シートでない最初のシート
+      const hit = wbS.SheetNames.find(n => n !== BLANK_SHEET && n !== DETAIL_SHEET); if (hit) sheet = hit;
+    }
+    sel.value = sheet;
+    selectSheet(kind, sheet);
+    document.getElementById(`opts-${kind}`).classList.add('show');
+  } catch (e) {
+    console.error(e);
+    drop.classList.remove('loaded');
+    drop.textContent = `読み込みに失敗しました: ${e.message}`;
+    delete state[kind];
+  }
+  updateRunState();
+}
+
+function selectSheet(kind, sheet) {
+  const s = state[kind];
+  s.sheet = sheet;
+  s.grid = sheetToGrid(s.wbS.Sheets[sheet]);
+  s.hdr = guessHeader(s.grid, DEFS[kind].fields);
+  s.cols = guessCols(s.grid, s.hdr, DEFS[kind].fields);
+  renderMap(kind);
+  if (kind === 'zanzan') updateDateRange();
+}
+
+function renderMap(kind) {
+  const s = state[kind], def = DEFS[kind];
+  document.getElementById(`hd-${kind}`).value = s.hdr + 1;
+  const H = s.grid[s.hdr] || [];
+  const width = Math.max(H.length, ...s.grid.slice(s.hdr, s.hdr + 5).map(r => r.length), 0);
+  const opts = ['<option value="">（なし）</option>'];
+  for (let c = 0; c < width; c++) opts.push(`<option value="${c}">${colName(c)}列: ${escapeHtml(txt(H[c]) || '(空)')}</option>`);
+  const map = document.getElementById(`map-${kind}`);
+  map.innerHTML = def.fields.map(f => `
+    <span class="${f.req ? 'req' : ''}">${f.label}</span>
+    <span><select data-key="${f.key}">${opts.join('')}</select>${f.note ? ` <span class="note">${f.note}</span>` : ''}</span>`).join('');
+  map.querySelectorAll('select').forEach(sel => {
+    const k = sel.dataset.key;
+    sel.value = s.cols[k] !== undefined ? String(s.cols[k]) : '';
+    sel.onchange = () => { if (sel.value === '') delete s.cols[k]; else s.cols[k] = +sel.value; renderPreview(kind); updateRunState(); if (kind === 'zanzan') updateDateRange(); };
+  });
+  renderPreview(kind);
+  updateRunState();
+  if (kind === 'zanzan') updateDateRange();
+}
+
+function renderPreview(kind) {
+  const s = state[kind];
+  const used = new Set(Object.values(s.cols));
+  const rows = s.grid.slice(s.hdr, s.hdr + 6);
+  const width = Math.min(Math.max(...rows.map(r => r.length), 0), 40);
+  let html = '<table>';
+  rows.forEach((r, i) => {
+    html += '<tr>';
+    for (let c = 0; c < width; c++) {
+      const tag = i === 0 ? 'th' : 'td';
+      let v = r[c];
+      if (i > 0 && typeof v === 'number' && /日|納期/.test(txt(rows[0][c])) && toKey(v)) v = keyToDisp(toKey(v));
+      html += `<${tag} class="${used.has(c) ? 'hl' : ''}">${escapeHtml(txt(v))}</${tag}>`;
+    }
+    html += '</tr>';
+  });
+  document.getElementById(`pv-${kind}`).innerHTML = html + '</table>';
+}
+
+function updateDateRange() {
+  const s = state.zanzan; if (!s || s.cols.date === undefined) { document.getElementById('dRange').textContent = ''; return; }
+  const keys = s.grid.slice(s.hdr + 1).map(r => toKey(r[s.cols.date])).filter(Boolean).sort();
+  const info = document.getElementById('dRange');
+  if (!keys.length) { info.textContent = '※納入指示日の列に日付が見つかりません'; return; }
+  info.textContent = `（リスト内の納入指示日：${keyToDisp(keys[0])} 〜 ${keyToDisp(keys[keys.length - 1])}）`;
+  const f = document.getElementById('dFrom'), t = document.getElementById('dTo');
+  if (!f.value) f.value = keys[0];
+  if (!t.value) t.value = keys[keys.length - 1];
+}
+
+function missingItems() {
+  const miss = [];
+  for (const [kind, def] of Object.entries(DEFS)) {
+    const s = state[kind];
+    if (!s) { if (def.required) miss.push(`${def.title}のファイル`); continue; }
+    for (const f of def.fields) if (f.req && s.cols[f.key] === undefined) miss.push(`${def.title}の「${f.label}」列`);
+  }
+  return miss;
+}
+function updateRunState() {
+  const miss = missingItems();
+  document.getElementById('run').disabled = miss.length > 0;
+  const m = document.getElementById('runMsg');
+  m.className = 'msg warn';
+  m.textContent = miss.length ? '未設定：' + miss.join('、') : '';
+}
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+// ===================== 転記ロジック（①〜⑤） =====================
+function compute(opts) {
+  const z = state.zanzan, d = state.daicho, h = state.hatchu, t = state.taisho;
+  const today = opts.today || todayKey();
+
+  // ① 製番台帳：納入指示番号 → 製番（複数可）
+  const ledger = new Map();
+  for (const r of d.grid.slice(d.hdr + 1)) {
+    const k = nk(r[d.cols.shiji]), sb = txt(r[d.cols.seiban]);
+    if (!k || !sb) continue;
+    if (!ledger.has(k)) ledger.set(k, []);
+    if (!ledger.get(k).includes(sb)) ledger.get(k).push(sb);
+  }
+  // ② 発注仕入状況：製番 → 部品行
+  const orders = new Map();
+  h.grid.forEach((r, i) => {
+    if (i <= h.hdr) return;
+    const k = nk(r[h.cols.seiban]); if (!k) return;
+    if (!orders.has(k)) orders.set(k, []);
+    orders.get(k).push({ row: i, buhin: toKey(r[h.cols.buhin]), kaito: toKey(r[h.cols.kaito]),
+      biko: h.cols.biko !== undefined ? txt(r[h.cols.biko]) : '' });
+  });
+  // ④ 対象外品番
+  const excluded = new Set();
+  if (t) for (const r of t.grid.slice(t.hdr + 1)) { const k = nk(r[t.cols.hinban]); if (k) excluded.add(k); }
+
+  // ⑤ 前回ブロックの検出（見出し行に「確認日・FD製番・部品納期・回答納期・回答備考」が並ぶ所）
+  const H = z.grid[z.hdr] || [];
+  const blocks = [];
+  for (let c = 0; c + 4 < H.length; c++) if (BLOCK.every((b, i) => nk(H[c + i]) === nk(b))) blocks.push(c);
+  const prev = blocks.length ? blocks[blocks.length - 1] : null;
+  const lastCol = Math.max(0, ...z.grid.map(r => { for (let c = r.length - 1; c >= 0; c--) if (txt(r[c]) !== '') return c; return -1; }));
+  const insertAt = prev !== null ? prev + 5 : (opts.pos === 'end' ? lastCol + 1 : z.cols.shiji + 1); // 0始まり
+
+  const from = opts.from || '0000-00-00', to = opts.to || '9999-99-99';
+  const rows = [];
+  const stats = { target: 0, linked: 0, answered: 0, blank: 0, excluded: 0, nolink: 0, changed: 0, added: 0 };
+  const detailRows = new Map();
+  for (let r = z.hdr + 1; r < z.grid.length; r++) {
+    const row = z.grid[r];
+    const dk = toKey(row[z.cols.date]);
+    if (!dk || dk < from || dk > to) continue;
+    const shiji = txt(row[z.cols.shiji]);
+    if (!shiji) continue;
+    stats.target++;
+    const res = { r, shiji, date: dk, hinban: z.cols.hinban !== undefined ? txt(row[z.cols.hinban]) : '',
+      kakunin: today, fd: '', buhin: null, kaito: null, biko: '', reason: '' };
+    if (z.cols.hinban !== undefined && excluded.has(nk(row[z.cols.hinban]))) {
+      res.fd = '対象外'; stats.excluded++;
+    } else {
+      const seibans = ledger.get(nk(shiji)) || [];
+      if (!seibans.length) { res.reason = '製番台帳に未登録'; stats.nolink++; }
+      else {
+        stats.linked++;
+        res.fd = seibans.join('、');
+        const lines = seibans.flatMap(s => orders.get(nk(s)) || []);
+        if (!lines.length) res.reason = '発注データなし';
+        else {
+          const bs = lines.map(l => l.buhin).filter(Boolean).sort();
+          res.buhin = bs.length ? bs[bs.length - 1] : null;
+          const unanswered = lines.filter(l => !l.kaito);
+          if (unanswered.length) {
+            res.reason = `未回答業者あり（${unanswered.length}件）`;
+            for (const l of unanswered) if (!detailRows.has(l.row)) detailRows.set(l.row, { shiji, fd: res.fd, row: l.row });
+          } else {
+            const ks = lines.map(l => l.kaito).sort();
+            res.kaito = ks[ks.length - 1];
+          }
+          res.biko = [...new Set(lines.map(l => l.biko).filter(Boolean))].join('／');
+        }
+      }
+    }
+    if (res.kaito) stats.answered++;
+    else if (res.fd !== '対象外') stats.blank++;
+
+    // 前回との比較
+    res.status = {};
+    if (prev !== null) {
+      const pv = { fd: txt(row[prev + 1]), buhin: toKey(row[prev + 2]) || txt(row[prev + 2]),
+        kaito: toKey(row[prev + 3]) || txt(row[prev + 3]), biko: txt(row[prev + 4]) };
+      const cur = { fd: res.fd, buhin: res.buhin || '', kaito: res.kaito || '', biko: res.biko };
+      for (const k of ['fd', 'buhin', 'kaito', 'biko']) {
+        const a = pv[k] || '', b = cur[k] || '';
+        if (a === b) res.status[k] = 'same';
+        else if (!a) { res.status[k] = 'new'; stats.added++; }
+        else { res.status[k] = 'chg'; stats.changed++; }
+      }
+    }
+    rows.push(res);
+  }
+  return { rows, stats, prev, blocks, insertAt, today, detail: [...detailRows.values()] };
+}
+
+// ===================== Excel 出力 =====================
+async function loadZanzanExcelJS() {
+  const z = state.zanzan;
+  let buf = z.buf;
+  if (!/\.(xlsx|xlsm)$/i.test(z.name)) buf = XLSX.write(z.wbS, { bookType: 'xlsx', type: 'array', cellStyles: true });
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf);
+  return wb;
+}
+
+function insertColumns(ws, at1, n, lastCol1) {
+  // at1: 挿入位置（1始まり）。ここから右を n 列ずらす
+  const merges = (ws.model.merges || []).slice();
+  const shifted = [];
+  for (const m of merges) {
+    const [a, b] = m.split(':');
+    const ca = ws.getCell(a), cb = ws.getCell(b || a);
+    const r1 = ca.row, c1 = ca.col, r2 = cb.row, c2 = cb.col;
+    if (c2 < at1) continue;
+    ws.unMergeCells(m);
+    shifted.push([r1, c1 >= at1 ? c1 + n : c1, r2, c2 + n]);
+  }
+  const maxRow = ws.rowCount;
+  for (let r = 1; r <= maxRow; r++) {
+    const row = ws.getRow(r);
+    for (let c = lastCol1; c >= at1; c--) {
+      const src = row.getCell(c), dst = row.getCell(c + n);
+      dst.value = src.value;
+      dst.style = JSON.parse(JSON.stringify(src.style || {}));
+    }
+    for (let c = at1; c < at1 + n && c <= lastCol1; c++) { const cell = row.getCell(c); cell.value = null; cell.style = {}; }
+  }
+  for (let c = lastCol1; c >= at1; c--) {
+    const w = ws.getColumn(c).width;
+    ws.getColumn(c + n).width = w;
+    ws.getColumn(c + n).hidden = ws.getColumn(c).hidden;
+  }
+  for (let c = at1; c < at1 + n; c++) { ws.getColumn(c).hidden = false; }
+  for (const [r1, c1, r2, c2] of shifted) ws.mergeCells(r1, c1, r2, c2);
+}
+
+function baseStyle(cell) {
+  const s = cell && cell.style ? cell.style : {};
+  const out = {};
+  if (s.border) out.border = JSON.parse(JSON.stringify(s.border));
+  out.font = { name: s.font?.name || 'Yu Gothic', size: s.font?.size || 11, color: { argb: 'FF000000' } };
+  out.alignment = { vertical: 'middle' };
+  return out;
+}
+
+async function buildWorkbook(res) {
+  const z = state.zanzan;
+  const wb = await loadZanzanExcelJS();
+  const ws = wb.getWorksheet(z.sheet);
+  if (!ws) throw new Error(`シート「${z.sheet}」が見つかりません`);
+  const lastCol1 = Math.max(ws.columnCount, ...z.grid.map(r => r.length));
+  const at1 = res.insertAt + 1;
+  if (at1 <= lastCol1) insertColumns(ws, at1, 5, lastCol1);
+  const hdr1 = z.hdr + 1;
+  const shiji1 = z.cols.shiji + 1;
+  const shijiCol1 = shiji1 >= at1 ? shiji1 + 5 : shiji1;
+
+  // 見出し
+  const hRow = ws.getRow(hdr1);
+  const hSrc = hRow.getCell(shijiCol1);
+  BLOCK.forEach((b, i) => {
+    const cell = hRow.getCell(at1 + i);
+    cell.value = b;
+    cell.style = JSON.parse(JSON.stringify(hSrc.style || {}));
+    cell.font = { ...(hSrc.style?.font || {}), bold: true };
+  });
+  [11, 14, 12, 12, 30].forEach((w, i) => { ws.getColumn(at1 + i).width = w; });
+
+  // データ
+  for (const r of res.rows) {
+    const row = ws.getRow(r.r + 1);
+    const base = baseStyle(row.getCell(shijiCol1));
+    const vals = [keyToDate(r.kakunin), r.fd || null, r.buhin ? keyToDate(r.buhin) : null, r.kaito ? keyToDate(r.kaito) : null, r.biko || null];
+    const keys = [null, 'fd', 'buhin', 'kaito', 'biko'];
+    vals.forEach((v, i) => {
+      const cell = row.getCell(at1 + i);
+      cell.value = v;
+      const st = JSON.parse(JSON.stringify(base));
+      if (i === 0 || i === 2 || i === 3) { st.numFmt = 'yyyy/mm/dd'; st.alignment.horizontal = 'center'; }
+      const status = keys[i] ? r.status[keys[i]] : null;
+      if (status === 'chg' || status === 'new') {
+        st.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: status === 'chg' ? COLOR_CHG : COLOR_NEW } };
+        st.font = { ...st.font, bold: true, color: { argb: 'FFFFFFFF' } };
+      }
+      cell.style = st;
+    });
+  }
+
+  // ③ 回答納期空欄シート
+  for (const name of [BLANK_SHEET, DETAIL_SHEET]) { const old = wb.getWorksheet(name); if (old) wb.removeWorksheet(old.id); }
+  const blockCols = new Set(res.blocks.flatMap(c => [0, 1, 2, 3, 4].map(i => c + i)));
+  const H = z.grid[z.hdr] || [];
+  const origCols = [];
+  for (let c = 0; c < Math.max(H.length, ...z.grid.map(r => r.length)); c++) if (!blockCols.has(c)) origCols.push(c);
+  const bs = wb.addWorksheet(BLANK_SHEET);
+  const blankRows = res.rows.filter(r => !r.kaito && r.fd !== '対象外');
+  bs.addRow(['理由', ...origCols.map(c => txt(H[c]) || colName(c) + '列'), ...BLOCK]);
+  for (const r of blankRows) {
+    const src = z.grid[r.r];
+    bs.addRow([r.reason, ...origCols.map(c => cellOut(src[c], c === z.cols.date)), keyToDate(r.kakunin), r.fd || null,
+      r.buhin ? keyToDate(r.buhin) : null, null, r.biko || null]);
+  }
+  styleTable(bs, origCols.length + 6, [origCols.indexOf(z.cols.date) + 2, origCols.length + 2, origCols.length + 4, origCols.length + 5]);
+
+  // 未回答明細シート（発注仕入状況一覧表の該当行）
+  if (res.detail.length) {
+    const h = state.hatchu, HH = h.grid[h.hdr] || [];
+    const w = Math.max(HH.length, ...res.detail.map(d => h.grid[d.row].length));
+    const ds = wb.addWorksheet(DETAIL_SHEET);
+    ds.addRow(['納入指示番号', 'FD製番', ...Array.from({ length: w }, (_, c) => txt(HH[c]) || colName(c) + '列')]);
+    const dateCols = [h.cols.buhin, h.cols.kaito];
+    for (const d of res.detail) ds.addRow([d.shiji, d.fd, ...Array.from({ length: w }, (_, c) => cellOut(h.grid[d.row][c], dateCols.includes(c)))]);
+    styleTable(ds, w + 2, dateCols.map(c => c + 3));
+  }
+
+  return await wb.xlsx.writeBuffer();
+}
+
+function cellOut(v, isDate) {
+  if (v === '' || v === undefined) return null;
+  if (isDate) { const k = toKey(v); if (k) return keyToDate(k); }
+  return v;
+}
+function styleTable(ws, width, dateCols1) {
+  const border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+  ws.eachRow((row, r) => {
+    for (let c = 1; c <= width; c++) {
+      const cell = row.getCell(c);
+      cell.border = border;
+      if (r === 1) { cell.font = { bold: true }; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDDEBF7' } }; }
+      else if (dateCols1.includes(c)) cell.numFmt = 'yyyy/mm/dd';
+    }
+  });
+  for (let c = 1; c <= width; c++) ws.getColumn(c).width = 13;
+  ws.views = [{ state: 'frozen', ySplit: 1 }];
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: width } };
+}
+
+function outName() {
+  const base = state.zanzan.name.replace(/\.[^.]+$/, '').replace(/_製番転記_\d{8}(\(\d+\))?$/, '');
+  return `${base}_製番転記_${todayKey().replace(/-/g, '')}.xlsx`;
+}
+
+// ===================== 実行 =====================
+async function run(optsOverride) {
+  const msg = document.getElementById('runMsg');
+  msg.className = 'msg'; msg.textContent = '処理中…';
+  try {
+    const opts = Object.assign({
+      from: document.getElementById('dFrom').value, to: document.getElementById('dTo').value,
+      pos: document.querySelector('input[name=pos]:checked').value,
+    }, optsOverride || {});
+    if (opts.from && opts.to && opts.from > opts.to) throw new Error('納入指示日の範囲が逆になっています');
+    const res = compute(opts);
+    if (!res.rows.length) throw new Error('指定した納入指示日の範囲に対象の行がありません');
+    const out = await buildWorkbook(res);
+    lastResult = { res, out, name: outName() };
+    showResult(lastResult);
+    msg.className = 'msg';
+    msg.textContent = `完了：${res.prev !== null ? `${res.blocks.length + 1}回目の転記（前回の「回答備考」の後ろに追記）` : '1回目の転記'}。下の結果からダウンロードしてください。`;
+    return lastResult;
+  } catch (e) {
+    console.error(e);
+    msg.className = 'msg err'; msg.textContent = 'エラー：' + e.message;
+    throw e;
+  }
+}
+
+function showResult({ res, name }) {
+  const s = res.stats;
+  const items = [
+    ['対象行（日付範囲内）', s.target], ['製番 紐づけ済', s.linked], ['回答納期あり', s.answered],
+    ['回答納期 空欄', s.blank], ['対象外', s.excluded], ['製番台帳に未登録', s.nolink],
+  ];
+  if (res.prev !== null) items.push(['前回から変更（セル数）', s.changed], ['新規記入（セル数）', s.added]);
+  document.getElementById('stats').innerHTML = items.map(([l, n]) => `<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+  document.getElementById('dlName').textContent = `ファイル名：${name}`;
+  const blank = res.rows.filter(r => !r.kaito && r.fd !== '対象外');
+  let html = '<table><tr><th>理由</th><th>納入指示番号</th><th>納入指示日</th><th>品番</th><th>FD製番</th><th>部品納期</th><th>回答備考</th></tr>';
+  for (const r of blank.slice(0, 300)) html += `<tr><td>${escapeHtml(r.reason)}</td><td>${escapeHtml(r.shiji)}</td><td>${keyToDisp(r.date)}</td><td>${escapeHtml(r.hinban)}</td><td>${escapeHtml(r.fd)}</td><td>${keyToDisp(r.buhin)}</td><td>${escapeHtml(r.biko)}</td></tr>`;
+  html += '</table>';
+  if (!blank.length) html = '<div style="padding:8px">回答納期が空欄の行はありません。</div>';
+  document.getElementById('blankPreview').innerHTML = html;
+  document.getElementById('resultCard').style.display = '';
+}
+
+function download() {
+  if (!lastResult) return;
+  const blob = new Blob([lastResult.out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = lastResult.name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+buildFileCards();
+document.getElementById('run').onclick = () => run().catch(() => {});
+document.getElementById('dl').onclick = download;
+document.getElementById('dFrom').onchange = document.getElementById('dTo').onchange = () => {};
+</script>
+</body>
+</html>
