@@ -86,6 +86,17 @@ select {
 
 select.drag { outline: 2px dashed var(--accent); }
 
+.drop {
+    margin-top: 12px;
+    padding: 20px 16px;
+    border: 2px dashed var(--line);
+    border-radius: 8px;
+    text-align: center;
+    color: var(--muted);
+}
+.drop.drag { border-color: var(--accent); color: var(--text); }
+.drop div { margin-top: 6px; color: var(--text); }
+
 button {
     font: inherit;
     padding: 6px 14px;
