@@ -31,8 +31,10 @@
   .drop { border: 2px dashed var(--line); border-radius: 6px; padding: 12px; text-align: center; color: var(--muted); cursor: pointer; }
   .drop.over { border-color: var(--accent); background: #eef4ff; }
   .drop.loaded { border-style: solid; border-color: var(--ok); color: var(--ok); background: #f0faf3; }
-  .opts { display: none; margin-top: 10px; }
-  .opts.show { display: block; }
+  .entry { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); }
+  .entry-head { justify-content: space-between; }
+  .entry .x { font: inherit; font-size: 12px; border: 1px solid #b8c0c8; background: #fff; border-radius: 4px; padding: 1px 10px; cursor: pointer; }
+  .entry .x:hover { border-color: var(--ng); color: var(--ng); }
   .row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 6px; }
   .row label { display: inline-flex; align-items: center; gap: 6px; }
   select, input[type=number], input[type=date] { font: inherit; padding: 3px 6px; border: 1px solid #b8c0c8; border-radius: 4px; background: #fff; }
@@ -129,7 +131,7 @@ const DEFS = {
       { key: 'date', label: '納入指示日', kw: ['納入指示日', '指示日', '納入日'], req: true },
       { key: 'hinban', label: '品番', kw: ['品番', '品目コード', '品目', '部品番号', '図番'], req: false, note: '④対象外の判定に使用' },
     ] },
-  daicho: { title: '製番台帳', desc: '納入指示番号と手配製番の紐づけ。', required: true,
+  daicho: { title: '製番台帳', desc: '納入指示番号と手配製番の紐づけ。複数ファイルはまとめて使います（ファイルごとにシート・列を設定）。', required: true, multi: true,
     fields: [
       { key: 'shiji', label: '納入指示番号', kw: KW_SHIJI, req: true },
       { key: 'seiban', label: '製番', kw: KW_SEIBAN, req: true },
@@ -145,7 +147,7 @@ const DEFS = {
     defaultSheet: '納期回答対象外',
     fields: [ { key: 'hinban', label: '品番', kw: ['品番', '品目コード', '品目', '部品番号', '図番'], req: true } ] },
 };
-const state = {}; // kind -> {name, buf, wbS, sheet, hdr, cols:{}}
+const state = {}; // kind -> entry {name, buf, wbS, sheet, grid, hdr, cols:{}, el}（製番台帳は entry の配列）
 let lastResult = null;
 
 // ===================== ユーティリティ =====================
@@ -232,103 +234,146 @@ function guessCols(grid, hdr, fields) {
 }
 
 // ===================== ファイル読み込み・UI =====================
+// state[kind] は単一ファイルなら entry、複数ファイル（製番台帳）なら entry の配列
+let entrySeq = 0;
+const entriesOf = kind => { const v = state[kind]; return Array.isArray(v) ? v : (v ? [v] : []); };
+
 function buildFileCards() {
   const host = document.getElementById('files');
   for (const [kind, def] of Object.entries(DEFS)) {
+    if (def.multi) state[kind] = [];
     const el = document.createElement('div');
     el.className = 'file';
     el.innerHTML = `
-      <h3>${def.title}${def.required ? '' : ' <span class="note">（任意）</span>'}</h3>
+      <h3>${def.title}${def.required ? '' : ' <span class="note">（任意）</span>'}${def.multi ? ' <span class="note">（複数ファイル可）</span>' : ''}</h3>
       <div class="desc">${def.desc}</div>
-      <div class="drop" id="drop-${kind}">ここにファイルをドロップ／クリックして選択<br><span class="note">.xlsx / .xlsm / .xls / .csv</span></div>
-      <input type="file" id="in-${kind}" accept=".xlsx,.xlsm,.xls,.csv" hidden>
-      <div class="opts" id="opts-${kind}">
-        <div class="row">
-          <label>シート <select id="sh-${kind}"></select></label>
-          <label>見出し行 <input type="number" min="1" id="hd-${kind}"></label>
-        </div>
-        <div class="map" id="map-${kind}"></div>
-        <div class="preview" id="pv-${kind}"></div>
-      </div>`;
+      <div class="drop" id="drop-${kind}"></div>
+      <input type="file" id="in-${kind}" accept=".xlsx,.xlsm,.xls,.csv" ${def.multi ? 'multiple' : ''} hidden>
+      <div id="list-${kind}"></div>`;
     host.appendChild(el);
     const drop = el.querySelector('.drop'), inp = el.querySelector('input[type=file]');
     drop.onclick = () => inp.click();
     drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
     drop.ondragleave = () => drop.classList.remove('over');
-    drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) handleFile(kind, e.dataTransfer.files[0]); };
-    inp.onchange = () => { if (inp.files[0]) handleFile(kind, inp.files[0]); inp.value = ''; };
-    el.querySelector(`#sh-${kind}`).onchange = e => selectSheet(kind, e.target.value);
-    el.querySelector(`#hd-${kind}`).onchange = e => { const s = state[kind]; s.hdr = Math.max(0, (+e.target.value || 1) - 1); s.cols = guessCols(s.grid, s.hdr, DEFS[kind].fields); renderMap(kind); };
+    drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); handleFiles(kind, e.dataTransfer.files); };
+    inp.onchange = () => { handleFiles(kind, inp.files); inp.value = ''; };
+    updateDrop(kind);
   }
 }
 
-async function handleFile(kind, file) {
-  const buf = await file.arrayBuffer();
-  await loadBuffer(kind, file.name, buf);
+function updateDrop(kind) {
+  const def = DEFS[kind], drop = document.getElementById(`drop-${kind}`), list = entriesOf(kind);
+  const types = '<span class="note">.xlsx / .xlsm / .xls / .csv</span>';
+  if (!list.length) {
+    drop.classList.remove('loaded');
+    drop.innerHTML = `ここにファイルをドロップ／クリックして選択${def.multi ? '（まとめて複数選べます）' : ''}<br>${types}`;
+  } else if (def.multi) {
+    drop.classList.add('loaded');
+    drop.innerHTML = `✔ ${list.length}ファイル読み込み済み<br><span class="note">ドロップ／クリックでさらに追加できます</span>`;
+  } else {
+    drop.classList.add('loaded');
+    drop.innerHTML = `✔ ${escapeHtml(list[0].name)}<br><span class="note">クリックで差し替え</span>`;
+  }
+}
+
+async function handleFiles(kind, files) {
+  const arr = [...(files || [])];
+  if (!DEFS[kind].multi) arr.splice(1);
+  for (const f of arr) await loadBuffer(kind, f.name, await f.arrayBuffer());
 }
 
 async function loadBuffer(kind, name, buf) {
-  const drop = document.getElementById(`drop-${kind}`);
+  const def = DEFS[kind];
+  let e;
   try {
     const wbS = await decodeAndRead(name, buf);
-    state[kind] = { name, buf, wbS };
-    drop.classList.add('loaded');
-    drop.innerHTML = `✔ ${escapeHtml(name)}<br><span class="note">クリックで差し替え</span>`;
-    const sel = document.getElementById(`sh-${kind}`);
-    sel.innerHTML = wbS.SheetNames.map(n => `<option>${escapeHtml(n)}</option>`).join('');
-    const def = DEFS[kind];
-    let sheet = wbS.SheetNames[0];
-    if (def.defaultSheet) { const hit = wbS.SheetNames.find(n => nk(n) === nk(def.defaultSheet)) || wbS.SheetNames.find(n => nk(n).includes(nk(def.defaultSheet))); if (hit) sheet = hit; }
-    if (kind === 'zanzan') { // 転記用の出力シートでない最初のシート
-      const hit = wbS.SheetNames.find(n => n !== BLANK_SHEET && n !== DETAIL_SHEET); if (hit) sheet = hit;
-    }
-    sel.value = sheet;
-    selectSheet(kind, sheet);
-    document.getElementById(`opts-${kind}`).classList.add('show');
-  } catch (e) {
-    console.error(e);
+    e = { id: ++entrySeq, kind, name, buf, wbS };
+  } catch (err) {
+    console.error(err);
+    const drop = document.getElementById(`drop-${kind}`);
     drop.classList.remove('loaded');
-    drop.textContent = `読み込みに失敗しました: ${e.message}`;
-    delete state[kind];
+    drop.textContent = `「${name}」の読み込みに失敗しました: ${err.message}`;
+    updateRunState();
+    return;
   }
+  if (def.multi) {
+    const i = state[kind].findIndex(x => x.name === name); // 同じ名前は差し替え
+    if (i >= 0) { state[kind][i].el.remove(); state[kind].splice(i, 1); }
+    state[kind].push(e);
+  } else {
+    if (state[kind]) state[kind].el.remove();
+    state[kind] = e;
+  }
+  e.el = createEntryEl(e);
+  document.getElementById(`list-${kind}`).appendChild(e.el);
+  let sheet = e.wbS.SheetNames[0];
+  if (def.defaultSheet) { const hit = e.wbS.SheetNames.find(n => nk(n) === nk(def.defaultSheet)) || e.wbS.SheetNames.find(n => nk(n).includes(nk(def.defaultSheet))); if (hit) sheet = hit; }
+  if (kind === 'zanzan') { const hit = e.wbS.SheetNames.find(n => n !== BLANK_SHEET && n !== DETAIL_SHEET); if (hit) sheet = hit; }
+  e.el.querySelector('.sh').value = sheet;
+  selectSheet(e, sheet);
+  updateDrop(kind);
   updateRunState();
+  return e;
 }
 
-function selectSheet(kind, sheet) {
-  const s = state[kind];
-  s.sheet = sheet;
-  s.grid = sheetToGrid(s.wbS.Sheets[sheet]);
-  s.hdr = guessHeader(s.grid, DEFS[kind].fields);
-  s.cols = guessCols(s.grid, s.hdr, DEFS[kind].fields);
-  renderMap(kind);
-  if (kind === 'zanzan') updateDateRange();
+function removeEntry(e) {
+  e.el.remove();
+  if (DEFS[e.kind].multi) state[e.kind] = state[e.kind].filter(x => x !== e);
+  else state[e.kind] = null;
+  updateDrop(e.kind);
+  updateRunState();
+  if (e.kind === 'zanzan') updateDateRange();
 }
 
-function renderMap(kind) {
-  const s = state[kind], def = DEFS[kind];
-  document.getElementById(`hd-${kind}`).value = s.hdr + 1;
-  const H = s.grid[s.hdr] || [];
-  const width = Math.max(H.length, ...s.grid.slice(s.hdr, s.hdr + 5).map(r => r.length), 0);
+function createEntryEl(e) {
+  const el = document.createElement('div');
+  el.className = 'entry';
+  el.innerHTML = `
+    <div class="row entry-head"><b>📄 ${escapeHtml(e.name)}</b><button class="x" type="button">外す</button></div>
+    <div class="row">
+      <label>シート <select class="sh">${e.wbS.SheetNames.map(n => `<option>${escapeHtml(n)}</option>`).join('')}</select></label>
+      <label>見出し行 <input type="number" min="1" class="hd"></label>
+    </div>
+    <div class="map"></div>
+    <div class="preview"></div>`;
+  el.querySelector('.x').onclick = () => removeEntry(e);
+  el.querySelector('.sh').onchange = ev => selectSheet(e, ev.target.value);
+  el.querySelector('.hd').onchange = ev => { e.hdr = Math.max(0, (+ev.target.value || 1) - 1); e.cols = guessCols(e.grid, e.hdr, DEFS[e.kind].fields); renderMap(e); };
+  return el;
+}
+
+function selectSheet(e, sheet) {
+  e.sheet = sheet;
+  e.grid = sheetToGrid(e.wbS.Sheets[sheet]);
+  e.hdr = guessHeader(e.grid, DEFS[e.kind].fields);
+  e.cols = guessCols(e.grid, e.hdr, DEFS[e.kind].fields);
+  renderMap(e);
+}
+
+function renderMap(e) {
+  const def = DEFS[e.kind];
+  e.el.querySelector('.hd').value = e.hdr + 1;
+  const H = e.grid[e.hdr] || [];
+  const width = Math.max(H.length, ...e.grid.slice(e.hdr, e.hdr + 5).map(r => r.length), 0);
   const opts = ['<option value="">（なし）</option>'];
   for (let c = 0; c < width; c++) opts.push(`<option value="${c}">${colName(c)}列: ${escapeHtml(txt(H[c]) || '(空)')}</option>`);
-  const map = document.getElementById(`map-${kind}`);
+  const map = e.el.querySelector('.map');
   map.innerHTML = def.fields.map(f => `
     <span class="${f.req ? 'req' : ''}">${f.label}</span>
     <span><select data-key="${f.key}">${opts.join('')}</select>${f.note ? ` <span class="note">${f.note}</span>` : ''}</span>`).join('');
   map.querySelectorAll('select').forEach(sel => {
     const k = sel.dataset.key;
-    sel.value = s.cols[k] !== undefined ? String(s.cols[k]) : '';
-    sel.onchange = () => { if (sel.value === '') delete s.cols[k]; else s.cols[k] = +sel.value; renderPreview(kind); updateRunState(); if (kind === 'zanzan') updateDateRange(); };
+    sel.value = e.cols[k] !== undefined ? String(e.cols[k]) : '';
+    sel.onchange = () => { if (sel.value === '') delete e.cols[k]; else e.cols[k] = +sel.value; renderPreview(e); updateRunState(); if (e.kind === 'zanzan') updateDateRange(); };
   });
-  renderPreview(kind);
+  renderPreview(e);
   updateRunState();
-  if (kind === 'zanzan') updateDateRange();
+  if (e.kind === 'zanzan') updateDateRange();
 }
 
-function renderPreview(kind) {
-  const s = state[kind];
-  const used = new Set(Object.values(s.cols));
-  const rows = s.grid.slice(s.hdr, s.hdr + 6);
+function renderPreview(e) {
+  const used = new Set(Object.values(e.cols));
+  const rows = e.grid.slice(e.hdr, e.hdr + 6);
   const width = Math.min(Math.max(...rows.map(r => r.length), 0), 40);
   let html = '<table>';
   rows.forEach((r, i) => {
@@ -341,7 +386,7 @@ function renderPreview(kind) {
     }
     html += '</tr>';
   });
-  document.getElementById(`pv-${kind}`).innerHTML = html + '</table>';
+  e.el.querySelector('.preview').innerHTML = html + '</table>';
 }
 
 function updateDateRange() {
@@ -358,9 +403,10 @@ function updateDateRange() {
 function missingItems() {
   const miss = [];
   for (const [kind, def] of Object.entries(DEFS)) {
-    const s = state[kind];
-    if (!s) { if (def.required) miss.push(`${def.title}のファイル`); continue; }
-    for (const f of def.fields) if (f.req && s.cols[f.key] === undefined) miss.push(`${def.title}の「${f.label}」列`);
+    const list = entriesOf(kind);
+    if (!list.length) { if (def.required) miss.push(`${def.title}のファイル`); continue; }
+    for (const e of list) for (const f of def.fields)
+      if (f.req && e.cols[f.key] === undefined) miss.push(`${def.title}${def.multi ? `（${e.name}）` : ''}の「${f.label}」列`);
   }
   return miss;
 }
@@ -375,12 +421,12 @@ function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp
 
 // ===================== 転記ロジック（①〜⑤） =====================
 function compute(opts) {
-  const z = state.zanzan, d = state.daicho, h = state.hatchu, t = state.taisho;
+  const z = state.zanzan, h = state.hatchu, t = state.taisho;
   const today = opts.today || todayKey();
 
-  // ① 製番台帳：納入指示番号 → 製番（複数可）
+  // ① 製番台帳（複数ファイルをまとめる）：納入指示番号 → 製番（複数可）
   const ledger = new Map();
-  for (const r of d.grid.slice(d.hdr + 1)) {
+  for (const d of entriesOf('daicho')) for (const r of d.grid.slice(d.hdr + 1)) {
     const k = nk(r[d.cols.shiji]), sb = txt(r[d.cols.seiban]);
     if (!k || !sb) continue;
     if (!ledger.has(k)) ledger.set(k, []);
