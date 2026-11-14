@@ -10,16 +10,16 @@
 :root{
   --bg:#f6f7f9; --panel:#fff; --text:#1d2330; --muted:#667085; --line:#e3e6eb;
   --accent:#2563eb; --accent-soft:#e8efff; --good:#15803d; --mid:#b45309; --bad:#b91c1c;
-  --head:#f1f3f6; --hl:#fff7d6;
+  --head:#f1f3f6; --hl:#fff7d6; --good-soft:#ecfdf3;
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
     --bg:#14171c; --panel:#1c2027; --text:#e6e8ec; --muted:#9aa3b2; --line:#2e343e;
-    --accent:#7aa2ff; --accent-soft:#232c40; --good:#4ade80; --mid:#fbbf24; --bad:#f87171; --head:#232830; --hl:#3a3320;
+    --accent:#7aa2ff; --accent-soft:#232c40; --good:#4ade80; --mid:#fbbf24; --bad:#f87171; --head:#232830; --hl:#3a3320; --good-soft:#16281e;
   }
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font-family:"Yu Gothic UI","Meiryo",system-ui,sans-serif;font-size:14px;line-height:1.5}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Meiryo UI","Meiryo",system-ui,sans-serif;font-size:14px;line-height:1.5}
 .wrap{max-width:1200px;margin:0 auto;padding:20px 16px 60px}
 h1{font-size:20px;margin:0 0 4px}
 .sub{color:var(--muted);margin:0 0 16px}
@@ -30,7 +30,10 @@ h1{font-size:20px;margin:0 0 4px}
 .step h2{font-size:15px;margin:0}
 .drop{margin-top:6px;border:2px dashed var(--line);border-radius:10px;padding:14px;text-align:center;cursor:pointer;color:var(--muted)}
 .drop.over{border-color:var(--accent);background:var(--accent-soft)}
-.drop.ok{border-style:solid;border-color:var(--good);color:var(--text)}
+.drop.ok{border-style:solid;border-color:var(--good);background:var(--good-soft);color:var(--text)}
+.drop.loading{border-color:var(--accent);background:var(--accent-soft);color:var(--text)}
+.drop .fname{display:block;font-weight:700;font-size:15px;color:var(--good);word-break:break-all}
+.drop .hint{display:block;font-size:12px;color:var(--muted);margin-top:2px}
 .info{color:var(--muted);font-size:13px;margin-top:4px;white-space:pre-wrap}
 .info.err{color:var(--bad)}
 .row{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;margin-top:6px}
@@ -68,7 +71,7 @@ ul.notes{margin:6px 0 0;padding-left:20px;color:var(--muted);font-size:12px}
       <div class="num">1</div>
       <div>
         <h2>AMD単品・保守日程表</h2>
-        <div class="drop" id="drop1">ここにドロップ、またはクリックして選択（.xlsx / .xlsm）
+        <div class="drop" id="drop1"><span class="lbl" data-default="ここにドロップ、またはクリックして選択（.xlsx / .xlsm）">ここにドロップ、またはクリックして選択（.xlsx / .xlsm）</span>
           <input id="file1" type="file" accept=".xlsx,.xlsm" class="hidden">
         </div>
         <div class="info" id="info1">未選択</div>
@@ -78,7 +81,7 @@ ul.notes{margin:6px 0 0;padding-left:20px;color:var(--muted);font-size:12px}
       <div class="num">2</div>
       <div>
         <h2>発注仕入状況一覧表（最新）</h2>
-        <div class="drop" id="drop2">ここにドロップ、またはクリックして選択（複数選んだときはファイル名の日付が一番新しいものを使います）
+        <div class="drop" id="drop2"><span class="lbl" data-default="ここにドロップ、またはクリックして選択（複数選んだときはファイル名の日付が一番新しいものを使います）">ここにドロップ、またはクリックして選択（複数選んだときはファイル名の日付が一番新しいものを使います）</span>
           <input id="file2" type="file" accept=".xlsx,.xlsm" class="hidden" multiple>
         </div>
         <div class="info" id="info2">未選択</div>
@@ -107,9 +110,10 @@ ul.notes{margin:6px 0 0;padding-left:20px;color:var(--muted);font-size:12px}
     <div class="panel">
       <h3>出力ファイルの中身</h3>
       <ul class="notes">
-        <li>シート「対象月データ」：伝票納期が対象月の行をそのまま貼付け、部品納期の後ろに「納期差（納品日−伝票納期）」を追加（手順①〜③）</li>
-        <li>シート「遅延抽出」：納期差がプラスの行（0・1日は対象外）を抜き出し、製番の後ろに「最終入荷日」「入荷差（最終入荷日−部品納期）」「区分」を追加。入荷差がプラスなら区分＝資材（入荷遅れ）（手順④〜⑦）</li>
-        <li>シート「発注明細」：遅延抽出の製番に該当する発注仕入状況一覧表の行（全列）。その製番で最後に入荷した行は黄色で塗っています（手順⑧）</li>
+        <li>シート「対象月データ」：伝票納期が対象月の行をそのまま貼付け、納品日の後ろに「納期差（納品日−伝票納期）」を追加（手順①〜③）</li>
+        <li>シート「遅延抽出」：納期差がプラスの行（0・1日は対象外）を抜き出し（注文書Noが「A」で始まるもの・品名がBｼﾞｸﾓｰﾀｰASSYのもの・納入先に「ﾄｷ」を含むものも対象外）、製番の後ろに「最終入荷日」「入荷差（最終入荷日−部品納期）」「区分」を追加。入荷差がプラスなら区分＝資材（入荷遅れ）（手順④〜⑦）</li>
+        <li>シート「原因・対策」：遅延抽出を製番ごとに1行にまとめ、「依頼先部署」「原因」「対策」「回答者」「回答日」の入力欄（緑の見出し）を付けたもの。項目はNo・製番・件数・品名・最終入荷日と入力欄（同じ製番に品名が複数あるときは「、」でつないで表示）</li>
+        <li>シート「発注明細」：遅延抽出の製番に該当する発注仕入状況一覧表の行（発注先番号・発注先名称・製造番号・発注番号・品番・品名規格・型式材質・メーカー名・発注日・部品納期・回答納期・回答備考・最終仕入日）（手順⑧）</li>
         <li>最終入荷日＝その製番の発注明細のうち「最終仕入日」が一番遅い日。一覧表に製番が無いときは空欄です。</li>
       </ul>
     </div>
@@ -191,7 +195,8 @@ function parseSchedule(buf, name) {
     let cDeliv = hn.indexOf('納品日', cSlip + 1);
     if (cDeliv < 0) cDeliv = hn.indexOf('納品日');
     if (cDeliv < 0) throw new Error(`シート「${sn}」に「納品日」の列が見つかりません。`);
-    const cols = { seiban: hn.indexOf('製番'), part: hn.indexOf('部品納期'), slip: cSlip, deliv: cDeliv };
+    const cols = { seiban: hn.indexOf('製番'), part: hn.indexOf('部品納期'), slip: cSlip, deliv: cDeliv,
+      order: hn.indexOf(norm('注文書No')), hinmei: hn.indexOf('品名'), nonyu: hn.indexOf('納入先') };
     const width = Math.max(header.length, ...aoa.slice(hr + 1, hr + 200).map(r => (r || []).length));
     while (header.length < width) header.push('');
     const rows = aoa.slice(hr + 1).filter(r => r && r.some(v => v != null && v !== ''));
@@ -218,6 +223,24 @@ function parsePO(buf, name) {
   throw new Error('「製造番号」「最終仕入日」の見出しがあるシートが見つかりません。発注仕入状況一覧表を選んでください。');
 }
 
+// ===== 遅延抽出で対象外にするもの =====
+// 半角・全角、大文字・小文字、空白の違いは区別しない
+const nk = s => String(s == null ? '' : s).normalize('NFKC').replace(/\s+/g, '').toUpperCase();
+const noDash = s => s.replace(/[ー\-－‐‑–—−─]/g, '');
+const EXCLUDE_RULES = [
+  { label: '注文書Noが「A」で始まる', col: 'order', colName: '注文書No', test: v => v.startsWith('A') },
+  // 「BｼﾞｸﾓｰﾀASSY」「Bｼﾞｸﾓｰﾀ-ASSY」などの表記ゆれも同じものとみなす（長音・ハイフンを無視）
+  { label: '品名がBｼﾞｸﾓｰﾀｰASSY', col: 'hinmei', colName: '品名', test: v => noDash(v) === noDash(nk('BｼﾞｸﾓｰﾀｰASSY')) },
+  { label: '納入先に「ﾄｷ」を含む', col: 'nonyu', colName: '納入先', test: v => v.includes(nk('ﾄｷ')) },
+];
+function excludeReason(cols, r) {
+  for (const rule of EXCLUDE_RULES) {
+    const ci = cols[rule.col];
+    if (ci >= 0 && rule.test(nk(r[ci]))) return rule.label;
+  }
+  return '';
+}
+
 // ===== ②〜⑧ 調査 =====
 function analyze(sched, po, ym) {
   const c = sched.cols;
@@ -230,7 +253,13 @@ function analyze(sched, po, ym) {
     target.push({ r, slip, deliv, part: toDay(r[c.part]), diff: (deliv != null) ? deliv - slip : null, seiban: normSeiban(r[c.seiban]) });
   }
   // ④ プラス（0・1は対象外）
-  const late = target.filter(t => t.diff != null && t.diff >= 2);
+  // 対象外ルール（注文書No・品名・納入先）に当たるものは除く
+  const late = [], excluded = [];
+  for (const t of target) {
+    if (t.diff == null || t.diff < 2) continue;
+    t.why = excludeReason(c, t.r);
+    (t.why ? excluded : late).push(t);
+  }
   // ⑤ 最終入荷日（製番ごとの最終仕入日の最大）
   const want = new Set(late.map(t => t.seiban).filter(Boolean));
   const poBy = new Map();
@@ -262,10 +291,10 @@ function analyze(sched, po, ym) {
     if (!g) continue;
     for (const i of g.idx) {
       const pr = po.rows[i];
-      detail.push({ pr, latest: g.last != null && toDay(pr[po.cols.last]) === g.last });
+      detail.push({ pr });
     }
   }
-  return { ym, target, late, detail, notFound: [...want].filter(s => !poBy.has(s)) };
+  return { ym, target, late, excluded, detail, notFound: [...want].filter(s => !poBy.has(s)) };
 }
 
 // 出力列の組み立て（元の列＋追加列）
@@ -279,7 +308,7 @@ function buildCols(sched, withLate) {
       out.push({ h: H_INDIFF, get: t => t.inDiff, add: 'diff' });
       out.push({ h: H_KBN, get: t => t.kbn || null, add: 'kbn' });
     }
-    if (i === c.part) out.push({ h: H_DIFF, get: t => t.diff, add: 'diff' });
+    if (i === c.deliv) out.push({ h: H_DIFF, get: t => t.diff, add: 'diff' });
   });
   return out;
 }
@@ -287,53 +316,92 @@ function buildCols(sched, withLate) {
 // ===== Excel出力（ExcelJS） =====
 const HEAD_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
 const ADD_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE4D6' } };
-const HL_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
+const INPUT_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2EFDA' } };
 const THIN = { style: 'thin', color: { argb: 'FFBFBFBF' } };
 const BORDER = { top: THIN, left: THIN, bottom: THIN, right: THIN };
-const RED = { color: { argb: 'FFC00000' }, bold: true };
+const FONT = 'Meiryo UI';
+const BASE_FONT = { name: FONT, size: 11 };
+const RED = { ...BASE_FONT, color: { argb: 'FFC00000' }, bold: true };
 
 function addSheet(wb, title, cols, items, opt = {}) {
   const ws = wb.addWorksheet(title, { views: [{ state: 'frozen', ySplit: 1 }] });
   const hrow = ws.addRow(cols.map(c => c.h));
   hrow.height = 30;
   hrow.eachCell((cell, i) => {
-    cell.font = { bold: true };
-    cell.fill = cols[i - 1].add ? ADD_FILL : HEAD_FILL;
+    cell.font = { ...BASE_FONT, bold: true };
+    cell.fill = cols[i - 1].input ? INPUT_FILL : cols[i - 1].add ? ADD_FILL : HEAD_FILL;
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
     cell.border = BORDER;
   });
   for (const it of items) {
     const row = ws.addRow(cols.map(c => c.get(it)));
-    const hl = opt.highlight && opt.highlight(it);
+    if (opt.rowHeight) row.height = opt.rowHeight;
     row.eachCell({ includeEmpty: true }, (cell, i) => {
       const col = cols[i - 1];
       cell.border = BORDER;
+      cell.font = BASE_FONT;
+      if (opt.rowHeight) cell.alignment = { vertical: 'top', wrapText: true };
+      if (col.numFmt) cell.numFmt = col.numFmt;
       if (cell.value instanceof Date) cell.numFmt = 'yyyy/m/d';
-      if (hl) cell.fill = HL_FILL;
-      if (col.add === 'diff' && typeof cell.value === 'number') { cell.alignment = { horizontal: 'right' }; if (cell.value > 0) cell.font = RED; }
+      if (col.add === 'diff' && typeof cell.value === 'number') { cell.alignment = { ...(cell.alignment || {}), horizontal: 'right' }; if (cell.value > 0) cell.font = RED; }
       if (col.add === 'kbn' && cell.value) cell.font = RED;
     });
   }
   // 列幅（見出しと先頭200行の文字数から）
   cols.forEach((c, i) => {
-    let w = Math.max(...String(c.h).split('\n').map(s => s.length * 2));
+    // 見出しの右にフィルターの▼ボタンが重なるぶん、少し広げる
+    let w = Math.max(...String(c.h).split('\n').map(s => s.length * 2)) + 3;
     for (const it of items.slice(0, 200)) {
       const v = c.get(it);
       const len = v instanceof Date ? 10 : String(v == null ? '' : v).replace(/[^\x00-\xff]/g, 'xx').length;
       if (len > w) w = len;
     }
-    ws.getColumn(i + 1).width = Math.min(Math.max(w + 2, 6), 40);
+    ws.getColumn(i + 1).width = c.width || Math.min(Math.max(w + 2, 6), 40);
   });
   if (items.length) ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: cols.length } };
   return ws;
 }
 
+// 発注明細シートに載せる列（この順で出力）
+const PO_DETAIL_COLS = ['発注先番号', '発注先名称', '製造番号', '発注番号', '品番', '品名規格', '型式材質', 'メーカー名', '発注日', '部品納期', '回答納期', '回答備考', '最終仕入日'];
+// 原因・対策シート：遅延抽出を製番ごとに1行へまとめ、各部署が原因・対策を書き込む欄を付ける
+function groupBySeiban(sched, late) {
+  const hn = sched.header.map(norm);
+  const cHin = hn.indexOf('品名');
+  const map = new Map();
+  for (const t of late) {
+    const key = t.seiban || `(製番なし)${map.size}`;
+    let g = map.get(key);
+    if (!g) map.set(key, g = { seiban: t.r[sched.cols.seiban], n: 0, hinmei: new Set(), lastIn: t.lastIn });
+    g.n++;
+    const v = cHin >= 0 ? t.r[cHin] : null;
+    if (v != null && String(v).trim() !== '') g.hinmei.add(String(v).trim());
+  }
+  return [...map.values()].map((g, i) => ({ ...g, no: i + 1 }));
+}
+const joinSet = s => [...s].join('、') || null;
+const CAUSE_COLS = [
+  { h: 'No', get: g => g.no },
+  { h: '製番', get: g => g.seiban },
+  { h: '件数', get: g => g.n },
+  { h: '品名', get: g => joinSet(g.hinmei) },
+  { h: H_LAST, get: g => g.lastIn == null ? null : dayToUTCDate(g.lastIn), add: 'date' },
+  { h: '依頼先部署', get: () => null, input: true, width: 16 },
+  { h: '原因', get: () => null, input: true, width: 45 },
+  { h: '対策', get: () => null, input: true, width: 45 },
+  { h: '回答者', get: () => null, input: true, width: 13 },
+  { h: '回答日', get: () => null, input: true, width: 13, numFmt: 'yyyy/m/d' },
+];
+
 function buildWorkbook(sched, po, res) {
   const wb = new ExcelJS.Workbook();
   addSheet(wb, '対象月データ', buildCols(sched, false), res.target);
   addSheet(wb, '遅延抽出', buildCols(sched, true), res.late);
-  const pcols = po.header.map((h, i) => ({ h, get: d => outVal(d.pr[i]) }));
-  addSheet(wb, '発注明細', pcols, res.detail, { highlight: d => d.latest });
+  addSheet(wb, '原因・対策', CAUSE_COLS, groupBySeiban(sched, res.late), { rowHeight: 45 });
+  const phn = po.header.map(norm);
+  const pcols = PO_DETAIL_COLS.map(h => ({ h, i: phn.indexOf(norm(h)) })).filter(c => c.i >= 0)
+    .map(c => ({ h: po.header[c.i], get: d => outVal(d.pr[c.i]) }));
+  addSheet(wb, '発注明細', pcols, res.detail);
   return wb;
 }
 
@@ -345,9 +413,10 @@ function showResult(sched, res) {
   const noDeliv = res.target.filter(t => t.deliv == null).length;
   $('cards').innerHTML = [
     ['対象月データ', res.target.length, `伝票納期 ${y}年${+m}月` + (noDeliv ? `（うち納品日なし ${noDeliv}件）` : '')],
-    ['遅延抽出', res.late.length, '納期差 2日以上', 'bad'],
+    ['遅延抽出', res.late.length, '納期差 2日以上（対象外を除く）', 'bad'],
+    ['対象外にした件数', res.excluded.length, EXCLUDE_RULES.map(rule => `${rule.label} ${res.excluded.filter(t => t.why === rule.label).length}件`).join('／')],
     ['資材（入荷遅れ）', nKbn, '入荷差がプラス', 'bad'],
-    ['発注明細', res.detail.length, `製番 ${new Set(res.late.map(t => t.seiban)).size - res.notFound.length}件分`],
+    ['発注明細', res.detail.length, `製番 ${new Set(res.late.map(t => t.seiban).filter(Boolean)).size - res.notFound.length}件分`],
     ['一覧表に無い製番', res.notFound.length, res.notFound.slice(0, 6).join('、') + (res.notFound.length > 6 ? ' ほか' : '')],
   ].map(([t, v, n, cls]) => `<div class="card ${cls || ''}"><div class="t">${t}</div><div class="v">${v}</div><div class="n">${esc(n)}</div></div>`).join('');
 
@@ -395,37 +464,51 @@ function setupDrop(dropId, inputId, handler) {
   drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files.length) handler([...e.dataTransfer.files]); });
   input.addEventListener('change', () => { if (input.files.length) handler([...input.files]); input.value = ''; });
 }
+// 枠の中の表示：未選択／読み込み中／選択済み（ファイル名）
+function setDrop(id, state, name) {
+  const drop = $(id), lbl = drop.querySelector('.lbl');
+  drop.classList.toggle('ok', state === 'ok');
+  drop.classList.toggle('loading', state === 'loading');
+  if (state === 'ok') lbl.innerHTML = `<span class="fname">✓ ${esc(name)}</span><span class="hint">選択済み（別のファイルにするときは、ここにドロップまたはクリック）</span>`;
+  else if (state === 'loading') lbl.innerHTML = `<span class="fname" style="color:var(--accent)">${esc(name)}</span><span class="hint">読み込み中…</span>`;
+  else lbl.textContent = lbl.dataset.default;
+}
 function checkLib() { if (typeof XLSX === 'undefined') throw new Error('Excelを読むための部品(SheetJS)を読み込めませんでした。ネットにつながっているか確認して、ページを開き直してください。'); }
 
 async function loadSchedule(buf, name) {
   checkLib();
-  setInfo($('info1'), `${name} を読み込み中…`); await tick();
+  setInfo($('info1'), `${name} を読み込み中…`); setDrop('drop1', 'loading', name); await tick();
   S.sched = parseSchedule(buf, name);
   setInfo($('info1'), `${name}\nシート「${S.sched.sheet}」 ${S.sched.rows.length}行（伝票納期の列：${S.sched.header[S.sched.cols.slip]}／納品日の列：${XLSX.utils.encode_col(S.sched.cols.deliv)}列）`);
-  $('drop1').classList.add('ok');
+  const missing = EXCLUDE_RULES.filter(rule => S.sched.cols[rule.col] < 0).map(rule => rule.colName);
+  if (missing.length) setInfo($('info1'), $('info1').textContent + `\n※「${missing.join('」「')}」の列が見つからないため、その対象外ルールは使われません。`, true);
+  setDrop('drop1', 'ok', name);
   fillMonths(S.sched); refreshRun();
 }
 async function loadPO(buf, name) {
   checkLib();
-  setInfo($('info2'), `${name} を読み込み中…（大きいファイルは30秒ほどかかります）`); await tick();
+  setInfo($('info2'), `${name} を読み込み中…（大きいファイルは30秒ほどかかります）`); setDrop('drop2', 'loading', name); await tick();
   S.po = parsePO(buf, name);
   setInfo($('info2'), `${name}\nシート「${S.po.sheet}」 ${S.po.rows.length.toLocaleString()}行`);
-  $('drop2').classList.add('ok');
+  const phn = S.po.header.map(norm);
+  const lack = PO_DETAIL_COLS.filter(h => !phn.includes(norm(h)));
+  if (lack.length) setInfo($('info2'), $('info2').textContent + `\n※「${lack.join('」「')}」の列が見つからないため、発注明細シートには出ません。`, true);
+  setDrop('drop2', 'ok', name);
   refreshRun();
 }
 
 setupDrop('drop1', 'file1', async files => {
   const f = files[0];
-  try { S.sched = null; $('drop1').classList.remove('ok'); await loadSchedule(await f.arrayBuffer(), f.name); }
-  catch (e) { console.error(e); setInfo($('info1'), e.message, true); refreshRun(); }
+  try { S.sched = null; await loadSchedule(await f.arrayBuffer(), f.name); }
+  catch (e) { console.error(e); setDrop('drop1', 'none'); setInfo($('info1'), e.message, true); refreshRun(); }
 });
 setupDrop('drop2', 'file2', async files => {
   const xl = files.filter(f => /\.(xlsx|xlsm)$/i.test(f.name));
   if (!xl.length) { setInfo($('info2'), '.xlsx / .xlsm のファイルを選んでください。', true); return; }
   xl.sort((a, b) => fileDate(b.name).localeCompare(fileDate(a.name)) || b.lastModified - a.lastModified);
   const f = xl[0];
-  try { S.po = null; $('drop2').classList.remove('ok'); await loadPO(await f.arrayBuffer(), f.name); if (xl.length > 1) $('info2').textContent += `\n（${xl.length}ファイル中、一番新しいものを使用）`; }
-  catch (e) { console.error(e); setInfo($('info2'), e.message, true); refreshRun(); }
+  try { S.po = null; await loadPO(await f.arrayBuffer(), f.name); if (xl.length > 1) $('info2').textContent += `\n（${xl.length}ファイル中、一番新しいものを使用）`; }
+  catch (e) { console.error(e); setDrop('drop2', 'none'); setInfo($('info2'), e.message, true); refreshRun(); }
 });
 
 async function run() {
